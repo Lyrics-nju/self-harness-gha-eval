@@ -4,6 +4,7 @@ PUBLICATION_MANIFEST.txt
 README.md
 docs/docker_registry_reachability.md
 docs/harbor_exception_evidence.md
+docs/full_feasibility_structured_evidence.md
 evaluation/normalize_outcome.py
 evaluation/normalize_outcome_v2.py
 evaluation/tests/test_docker_endpoint_policy.py
@@ -17,6 +18,7 @@ gha/synthetic-direct/tests/test.sh
 scripts/gha_docker_qualification.sh
 scripts/docker_endpoint_policy.py
 scripts/capture_harbor_diagnostic.py
+scripts/capture_real_probe.py
 scripts/gha_harbor_synthetic.sh
 scripts/gha_harbor_diagnostic.sh
 scripts/gha_minimal_sanity.sh

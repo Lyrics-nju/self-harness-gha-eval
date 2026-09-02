@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p reports work/gha/jobs
+          mkdir -p reports work/gha/jobs work/gha/streams
           date +%s > work/gha/job_started_epoch
           {
             echo "runner.os=${RUNNER_OS}"
@@ -79,11 +79,12 @@ jobs:
           printf 'install,HARBOR_UV_FOOTPRINT,%s,uv tool install harbor==%s\n' "$((after-before))" "$HARBOR_VERSION" >> reports/gha_disk_budget.csv
           scripts/gha_record_disk.sh harbor_install FREE_AFTER_HARBOR_INSTALL reports/gha_disk_budget.csv
 
-      - name: Harbor synthetic preflight 5 of 5
+      - name: Harbor structured parser 8 of 8 and synthetic preflight 5 of 5
         shell: bash
         run: |
           set -euo pipefail
           export PATH="$HOME/.local/bin:$PATH"
+          python3 evaluation/tests/test_harbor_exception_policy.py | tee reports/gha_harbor_policy_tests.txt
           scripts/gha_harbor_synthetic.sh preflight 5 reports/gha_harbor_synthetic.csv
           scripts/gha_record_disk.sh harbor_preflight FREE_AFTER_HARBOR_PREFLIGHT reports/gha_disk_budget.csv
 
@@ -120,7 +121,7 @@ jobs:
           set -euo pipefail
           scripts/gha_resource_gate.sh reports/gha_disk_budget.csv
 
-      - name: Portfolio optimization diagnostic only
+      - name: Exactly one portfolio optimization Oracle diagnostic
         shell: bash
         run: |
           set -euo pipefail
@@ -145,10 +146,13 @@ jobs:
             reports/gha_network_qualification.csv
             reports/gha_docker_qualification.csv
             reports/gha_docker_policy_tests.txt
+            reports/gha_harbor_policy_tests.txt
             reports/gha_harbor_synthetic.csv
+            reports/harbor_trials/**
             reports/gha_normalizer.txt
             reports/gha_normalizer_outputs.json
             reports/gha_tb_integrity.txt
             reports/gha_real_probe.csv
+            reports/real_probe/**
           if-no-files-found: ignore
           retention-days: 14
