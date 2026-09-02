@@ -1,15 +1,18 @@
 .github/workflows/gha-eval-feasibility.yml
 .github/workflows/gha-harbor-diagnostic.yml
+.github/workflows/gha-tb21-materialization.yml
 PUBLICATION_MANIFEST.txt
 README.md
 docs/docker_registry_reachability.md
 docs/harbor_exception_evidence.md
+docs/tb21_dataset_resolution.md
 docs/full_feasibility_structured_evidence.md
 evaluation/normalize_outcome.py
 evaluation/normalize_outcome_v2.py
 evaluation/tests/test_docker_endpoint_policy.py
 evaluation/tests/test_harbor_exception_policy.py
 evaluation/tests/test_normalizer_v2_public.py
+evaluation/tests/test_tb21_dataset_policy.py
 gha/synthetic-direct/environment/Dockerfile
 gha/synthetic-direct/instruction.md
 gha/synthetic-direct/solution/solve.sh
@@ -29,4 +32,6 @@ scripts/gha_record_disk.sh
 scripts/gha_resource_gate.sh
 scripts/gha_tb21_integrity.py
 scripts/harbor_exception_policy.py
+scripts/tb21_dataset_policy.py
+scripts/gha_tb21_materialization.py
 scripts/public_secret_scan.py
