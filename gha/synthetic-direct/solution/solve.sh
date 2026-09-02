@@ -5,4 +5,7 @@ mkdir -p /root/probe
 curl -fsSL --retry 0 --connect-timeout 15 --max-time 90 https://github.com/ >/dev/null
 curl -fsSL --retry 0 --connect-timeout 15 --max-time 90 https://astral.sh/uv/install.sh >/dev/null
 curl -fsSL --retry 0 --connect-timeout 15 --max-time 90 https://www.python.org/ >/dev/null
+printf 'ORACLE_NETWORK_OK\n'
+cp /task-network.ok /root/probe/task-network.ok
+printf 'ORACLE_NETWORK_OK\n' > /root/probe/oracle-network.ok
 printf 'ok\n' > /root/probe/agent.ok

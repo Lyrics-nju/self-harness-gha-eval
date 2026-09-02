@@ -1,5 +1,8 @@
 schema_version = "1.1"
-artifacts = []
+artifacts = [
+  { source = "/root/probe/task-network.ok", destination = "task-network.ok" },
+  { source = "/root/probe/oracle-network.ok", destination = "oracle-network.ok" },
+]
 
 [task]
 name = "self-harness/gha-direct-network-probe"
