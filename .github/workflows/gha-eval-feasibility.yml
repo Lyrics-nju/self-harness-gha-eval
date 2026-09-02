@@ -1,0 +1,152 @@
+name: GHA Eval Feasibility
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gha-eval-feasibility
+  cancel-in-progress: false
+
+jobs:
+  feasibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      HARBOR_VERSION: "0.21.0"
+      TB21_DIR: terminal-bench/terminal-bench-2-1
+      TB21_FILES: "946"
+      TB21_TASKS: "89"
+      TB21_DIGEST: 2326c348875770eecf68f7097a25c8a5fbaed60976a0ce6ca1b12b8d8519bd7c
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Baseline runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports work/gha/jobs
+          date +%s > work/gha/job_started_epoch
+          {
+            echo "runner.os=${RUNNER_OS}"
+            echo "runner.arch=${RUNNER_ARCH}"
+            echo "ImageOS=${ImageOS:-unknown}"
+            echo "ImageVersion=${ImageVersion:-unknown}"
+            uname -a
+            lsb_release -a
+            nproc
+            free -h
+            df -h
+            git --version
+            python3 --version
+            node --version
+            command -v docker
+            docker version
+            docker info
+          } > reports/gha_runner_environment.txt 2>&1
+          printf 'stage,metric,bytes,detail\n' > reports/gha_disk_budget.csv
+          scripts/gha_record_disk.sh baseline RAW_RUNNER_FREE_SPACE reports/gha_disk_budget.csv
+          scripts/gha_record_disk.sh cleanup SAFE_CLEANED_FREE_SPACE reports/gha_disk_budget.csv 'NOT_PERFORMED; no cleanup'
+
+      - name: Native runner network gate 40 of 40
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/gha_network_qualification.sh reports/gha_network_qualification.csv
+          scripts/gha_record_disk.sh network FREE_AFTER_NETWORK reports/gha_disk_budget.csv
+
+      - name: Docker gate and 20 container HTTPS operations
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/gha_docker_qualification.sh reports/gha_docker_qualification.csv
+          docker system df -v >> reports/gha_runner_environment.txt
+          scripts/gha_record_disk.sh docker FREE_AFTER_DOCKER reports/gha_disk_budget.csv
+
+      - name: Install Harbor exactly 0.21.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          before=$(du -sb "$HOME/.local" 2>/dev/null | cut -f1 || echo 0)
+          curl --proto '=https' --tlsv1.2 -LsSf --retry 0 https://astral.sh/uv/install.sh | sh
+          export PATH="$HOME/.local/bin:$PATH"
+          uv tool install "harbor==${HARBOR_VERSION}"
+          test "$(harbor --version)" = "$HARBOR_VERSION"
+          after=$(du -sb "$HOME/.local" | cut -f1)
+          printf 'install,HARBOR_UV_FOOTPRINT,%s,uv tool install harbor==%s\n' "$((after-before))" "$HARBOR_VERSION" >> reports/gha_disk_budget.csv
+          scripts/gha_record_disk.sh harbor_install FREE_AFTER_HARBOR_INSTALL reports/gha_disk_budget.csv
+
+      - name: Harbor synthetic preflight 5 of 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          scripts/gha_harbor_synthetic.sh preflight 5 reports/gha_harbor_synthetic.csv
+          scripts/gha_record_disk.sh harbor_preflight FREE_AFTER_HARBOR_PREFLIGHT reports/gha_disk_budget.csv
+
+      - name: Harbor synthetic extended 20 of 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          scripts/gha_harbor_synthetic.sh extended 20 reports/gha_harbor_synthetic.csv
+          scripts/gha_record_disk.sh harbor_extended FREE_AFTER_HARBOR_EXTENDED reports/gha_disk_budget.csv
+
+      - name: Normalizer v2 9 of 9 and portability
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 evaluation/tests/test_normalizer_v2_public.py | tee reports/gha_normalizer.txt
+          python3 scripts/gha_normalizer_portability.py work/gha/jobs reports/gha_normalizer_outputs.json
+
+      - name: Materialize and verify TB2.1 read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          harbor download terminal-bench@2.1 --output-dir terminal-bench --export
+          python3 scripts/gha_tb21_integrity.py "$TB21_DIR" "$TB21_TASKS" "$TB21_FILES" "$TB21_DIGEST" | tee reports/gha_tb_integrity.txt
+          chmod -R a-w "$TB21_DIR"
+          size=$(du -sb "$TB21_DIR" | cut -f1)
+          printf 'benchmark,TB21_DATASET_FOOTPRINT,%s,read-only verified\n' "$size" >> reports/gha_disk_budget.csv
+          scripts/gha_record_disk.sh benchmark FREE_AFTER_TB21 reports/gha_disk_budget.csv
+
+      - name: Disk and time hard gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/gha_resource_gate.sh reports/gha_disk_budget.csv
+
+      - name: Portfolio optimization diagnostic only
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          scripts/gha_real_probe.sh portfolio-optimization reports/gha_real_probe.csv
+          scripts/gha_record_disk.sh diagnostic FREE_AFTER_DIAGNOSTIC reports/gha_disk_budget.csv
+
+      - name: Scan sanitized evidence before upload
+        id: artifact_scan
+        if: always()
+        shell: bash
+        run: scripts/public_secret_scan.py --artifact-mode reports
+
+      - name: Upload deterministic sanitized evidence
+        if: always() && steps.artifact_scan.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gha-feasibility-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            reports/gha_runner_environment.txt
+            reports/gha_disk_budget.csv
+            reports/gha_network_qualification.csv
+            reports/gha_docker_qualification.csv
+            reports/gha_harbor_synthetic.csv
+            reports/gha_normalizer.txt
+            reports/gha_normalizer_outputs.json
+            reports/gha_tb_integrity.txt
+            reports/gha_real_probe.csv
+          if-no-files-found: ignore
+          retention-days: 14
