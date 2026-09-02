@@ -1,8 +1,10 @@
 .github/workflows/gha-eval-feasibility.yml
 PUBLICATION_MANIFEST.txt
 README.md
+docs/docker_registry_reachability.md
 evaluation/normalize_outcome.py
 evaluation/normalize_outcome_v2.py
+evaluation/tests/test_docker_endpoint_policy.py
 evaluation/tests/test_normalizer_v2_public.py
 gha/synthetic-direct/environment/Dockerfile
 gha/synthetic-direct/instruction.md
@@ -10,6 +12,7 @@ gha/synthetic-direct/solution/solve.sh
 gha/synthetic-direct/task.toml
 gha/synthetic-direct/tests/test.sh
 scripts/gha_docker_qualification.sh
+scripts/docker_endpoint_policy.py
 scripts/gha_harbor_synthetic.sh
 scripts/gha_network_qualification.sh
 scripts/gha_normalizer_portability.py

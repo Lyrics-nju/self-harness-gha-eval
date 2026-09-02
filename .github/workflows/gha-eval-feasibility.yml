@@ -61,6 +61,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 evaluation/tests/test_docker_endpoint_policy.py | tee reports/gha_docker_policy_tests.txt
           scripts/gha_docker_qualification.sh reports/gha_docker_qualification.csv
           docker system df -v >> reports/gha_runner_environment.txt
           scripts/gha_record_disk.sh docker FREE_AFTER_DOCKER reports/gha_disk_budget.csv
@@ -143,6 +144,7 @@ jobs:
             reports/gha_disk_budget.csv
             reports/gha_network_qualification.csv
             reports/gha_docker_qualification.csv
+            reports/gha_docker_policy_tests.txt
             reports/gha_harbor_synthetic.csv
             reports/gha_normalizer.txt
             reports/gha_normalizer_outputs.json

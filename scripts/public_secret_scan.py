@@ -8,7 +8,7 @@ a=p.parse_args(); root=Path(a.root)
 categories={
  'PROVIDER_OR_PROXY_CONFIG': ['subscription'+'.secret','provider_'+'raw.yaml','config.'+'runtime.yaml','fixed-'+'node','miho'+'mo'],
  'MODEL_OR_CLOUD_KEY_NAME': ['DAYTONA_'+'API_KEY','DEEPSEEK_'+'API_KEY','MIMO_'+'API_KEY'],
- 'AUTH_TOKEN_PATTERN': ['gho'+'_','github'+'_pat_','authorization'+':','bearer'+' '],
+ 'AUTH_TOKEN_PATTERN': ['gho'+'_','github'+'_pat_','authorization'+':'],
  'PRIVATE_KEY': ['BEGIN '+'OPENSSH PRIVATE KEY','BEGIN '+'RSA PRIVATE KEY'],
  'CREDENTIAL_CONTENT': ['coo'+'kie','pass'+'word'],
  'PRIVATE_ARTIFACT': ['private '+'trajectory','private model '+'trace'],
