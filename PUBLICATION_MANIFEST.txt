@@ -3,6 +3,7 @@
 .github/workflows/gha-tb21-materialization.yml
 .github/workflows/gha-tb21-single-task.yml
 .github/workflows/gha-tb21-multi-task.yml
+.github/workflows/gha-m1b19-acquisition.yml
 PUBLICATION_MANIFEST.txt
 README.md
 docs/docker_registry_reachability.md
@@ -20,6 +21,7 @@ evaluation/tests/test_tb21_dataset_policy.py
 evaluation/tests/test_single_task_summary.py
 evaluation/tests/test_m1b17i_task_policy.py
 evaluation/tests/test_sanity_typed.py
+evaluation/tests/test_m1b19_controller.py
 gha/synthetic-direct/environment/Dockerfile
 gha/synthetic-direct/instruction.md
 gha/synthetic-direct/solution/solve.sh
@@ -48,4 +50,5 @@ scripts/gha_tb21_resolve_m1b17i.py
 scripts/gha_m1b17i_sanity.sh
 scripts/gha_m1b17i_controller.py
 scripts/sanity_typed.py
+scripts/gha_m1b19_controller.py
 scripts/public_secret_scan.py

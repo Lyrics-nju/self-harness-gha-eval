@@ -1,0 +1,97 @@
+name: M1B.19 Formal Stable-Pool Acquisition Batch
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_commit:
+        required: true
+        type: string
+      batch_label:
+        required: true
+        type: string
+      batch_b64:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m1b19-formal-acquisition
+  cancel-in-progress: false
+
+jobs:
+  acquire:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Commit integrity and runner baseline
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          BATCH_B64: ${{ inputs.batch_b64 }}
+          BATCH_LABEL: ${{ inputs.batch_label }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_SHA" = "$EXPECTED_COMMIT"
+          mkdir -p reports work/jobs
+          date +%s > work/job_started_epoch
+          printf '%s' "$BATCH_B64" | base64 --decode > work/batch.json
+          python3 -m json.tool work/batch.json > reports/batch_manifest.json
+          {
+            echo "batch_label=$BATCH_LABEL"
+            echo "GITHUB_SHA=$GITHUB_SHA"
+            echo "ImageOS=${ImageOS:-unknown}"
+            echo "ImageVersion=${ImageVersion:-unknown}"
+            uname -a
+            lsb_release -a
+            uname -m
+            nproc
+            free -b
+            df --output=avail -B1 /
+            docker version
+            docker info --format 'StorageDriver={{.Driver}}'
+          } > reports/runner.txt 2>&1
+          cp .github/workflows/gha-m1b19-acquisition.yml reports/workflow.yml
+      - name: Frozen regression suites and compact sanity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 evaluation/tests/test_docker_endpoint_policy.py | tee reports/docker_policy_tests.txt
+          python3 evaluation/tests/test_harbor_exception_policy.py | tee reports/harbor_parser_tests.txt
+          python3 evaluation/tests/test_normalizer_v2_public.py | tee reports/normalizer_v2_tests.txt
+          python3 evaluation/tests/test_tb21_dataset_policy.py | tee reports/dataset_policy_tests.txt
+          python3 evaluation/tests/test_m1b17i_task_policy.py | tee reports/task_selection_tests.txt
+          python3 evaluation/tests/test_sanity_typed.py | tee reports/sanity_parser_tests.txt
+          python3 evaluation/tests/test_m1b19_controller.py | tee reports/acquisition_controller_tests.txt
+          scripts/gha_m1b17i_sanity.sh | tee reports/compact_sanity_summary.txt
+      - name: Install exact Harbor and resolve immutable dataset
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -LsSf --retry 0 https://astral.sh/uv/install.sh | sh
+          export PATH="$HOME/.local/bin:$PATH"
+          uv tool install 'harbor==0.21.0'
+          test "$(harbor --version)" = 0.21.0
+          harbor --version | tee reports/harbor_version.txt
+          env -u HARBOR_API_KEY "$HOME/.local/share/uv/tools/harbor/bin/python" scripts/gha_tb21_resolve_m1b17i.py
+      - name: Execute frozen acquisition batch sequentially
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          env -u HARBOR_API_KEY python3 scripts/gha_m1b19_controller.py --batch work/batch.json | tee reports/controller.log
+      - name: Scan reached evidence
+        id: scan
+        if: always()
+        shell: bash
+        run: scripts/public_secret_scan.py --artifact-mode reports | tee reports/secret_scan.txt
+      - name: Upload reached evidence
+        if: always() && steps.scan.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: m1b19-${{ inputs.batch_label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/**
+          if-no-files-found: error
+          retention-days: 14
