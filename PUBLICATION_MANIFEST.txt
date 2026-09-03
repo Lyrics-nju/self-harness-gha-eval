@@ -10,6 +10,7 @@ docs/harbor_exception_evidence.md
 docs/tb21_dataset_resolution.md
 docs/tb21_single_task_oracle_probe.md
 docs/full_feasibility_structured_evidence.md
+docs/sanity_typed_aggregation.md
 evaluation/normalize_outcome.py
 evaluation/normalize_outcome_v2.py
 evaluation/tests/test_docker_endpoint_policy.py
@@ -18,6 +19,7 @@ evaluation/tests/test_normalizer_v2_public.py
 evaluation/tests/test_tb21_dataset_policy.py
 evaluation/tests/test_single_task_summary.py
 evaluation/tests/test_m1b17i_task_policy.py
+evaluation/tests/test_sanity_typed.py
 gha/synthetic-direct/environment/Dockerfile
 gha/synthetic-direct/instruction.md
 gha/synthetic-direct/solution/solve.sh
@@ -45,4 +47,5 @@ scripts/m1b17i_task_policy.py
 scripts/gha_tb21_resolve_m1b17i.py
 scripts/gha_m1b17i_sanity.sh
 scripts/gha_m1b17i_controller.py
+scripts/sanity_typed.py
 scripts/public_secret_scan.py

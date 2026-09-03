@@ -15,7 +15,7 @@ record_curl() {
   [ "$rc" -eq 35 ] && tls=1; [ "$rc" -eq 6 ] && dns=1; [ "$rc" -eq 28 ] && timeout=1
   [ "$rc" -eq 0 ] && [ "$status" -ge 200 ] && [ "$status" -lt 400 ] && ok=1
   printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "$op" "$category" "$target" "$ok" "$rc" "$status" "$tls" "$dns" "$timeout" >> "$out"
-  [ "$ok" -eq 1 ]
+  return 0
 }
 for _ in 1 2; do record_curl host_github host https://github.com/; done
 for _ in 1 2; do
@@ -25,15 +25,12 @@ for _ in 1 2; do
   set +e; fields=$(python3 scripts/docker_endpoint_policy.py docker_registry_v2 "$rc" "$status" "work/sanity/headers-$op"); policy_rc=$?; set -e
   IFS=, read -r transport _ _ _ _ _ tls dns timeout final <<<"$fields"; ok=0; [ "$final" = PASS ] && ok=1
   printf '%s,docker_registry,https://registry-1.docker.io/v2/,%s,%s,%s,%s,%s,%s\n' "$op" "$ok" "$rc" "$status" "$tls" "$dns" "$timeout" >> "$out"
-  [ "$policy_rc" -eq 0 ]
+  : "$policy_rc"
 done
 for _ in 1 2; do record_curl container_github container https://github.com/; done
-docker version > reports/docker_sanity.txt 2>&1
-docker run --rm hello-world >> reports/docker_sanity.txt 2>&1
-python3 - "$out" <<'PY'
-import csv,sys
-r=list(csv.DictReader(open(sys.argv[1])))
-assert len(r)==6 and all(x['success']=='1' for x in r)
-assert sum(int(x[k]) for x in r for k in ('tls_failure','dns_failure','timeout'))==0
-print('GHA_17I_COMPACT_SANITY=6/6 PASS; DOCKER_BASIC=PASS; CURL35_TLS_DNS_TIMEOUT=0')
-PY
+set +e
+docker version > reports/docker_sanity.txt 2>&1; docker_version_rc=$?
+docker run --rm hello-world >> reports/docker_sanity.txt 2>&1; hello_rc=$?
+set -e
+docker_basic=0; [ "$docker_version_rc" -eq 0 ] && [ "$hello_rc" -eq 0 ] && docker_basic=1
+python3 scripts/sanity_typed.py --csv "$out" --docker-basic "$docker_basic" --structured reports/sanity_structured.json --aggregate reports/sanity_aggregate.json

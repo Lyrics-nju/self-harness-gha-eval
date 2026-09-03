@@ -17,7 +17,7 @@ async def main():
     ok=(kind=='dataset' and metadata.name==DATASET and metadata.dataset_version_content_hash==DIGEST and len(ids)==TASK_COUNT and tuple(selected)==TASKS)
     evidence={'harbor_version':'0.21.0','anonymous_public_access':True,'requested_identifier':DATASET,'requested_immutable_version':f'sha256:{DIGEST}','resolved_identifier':metadata.name,'resolved_version':metadata.version,'resolved_content_hash':metadata.dataset_version_content_hash,'task_count':len(ids),'task_id_sha256':task_id_sha256(ids),'selection_indices':list(INDICES),'selected_tasks':selected,'identity_match_17g_17h':'PASS' if ok else 'FAIL'}
     Path('reports/dataset_resolution.json').write_text(json.dumps(evidence,indent=2)+'\n')
-    Path('reports/m1b17i_selected_tasks.json').write_text(json.dumps({'selection_order':'C_BYTEWISE','population':TASK_COUNT,'indices':list(INDICES),'tasks':selected},indent=2)+'\n')
+    Path('reports/m1b17j_selected_tasks.json').write_text(json.dumps({'selection_order':'C_BYTEWISE','population':TASK_COUNT,'indices':list(INDICES),'tasks':selected},indent=2)+'\n')
     print(json.dumps(evidence,sort_keys=True))
     if not ok: raise SystemExit('TB21_DATASET_IDENTITY_DRIFT')
 asyncio.run(main())
