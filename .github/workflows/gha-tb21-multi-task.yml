@@ -1,0 +1,77 @@
+name: GHA TB2.1 Bounded Multi-Task Oracle Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gha-tb21-m1b17i-bounded-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Runner baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports work/jobs
+          date +%s > work/job_started_epoch
+          {
+            echo "ImageOS=${ImageOS:-unknown}"
+            echo "ImageVersion=${ImageVersion:-unknown}"
+            uname -a
+            lsb_release -a
+            uname -m
+            nproc
+            free -b
+            df --output=avail -B1 /
+            docker version
+            docker info --format 'StorageDriver={{.Driver}}'
+          } > reports/runner.txt 2>&1
+          cp .github/workflows/gha-tb21-multi-task.yml reports/workflow.yml
+      - name: Frozen regression suites and compact sanity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 evaluation/tests/test_docker_endpoint_policy.py | tee reports/docker_policy_tests.txt
+          python3 evaluation/tests/test_harbor_exception_policy.py | tee reports/harbor_parser_tests.txt
+          python3 evaluation/tests/test_normalizer_v2_public.py | tee reports/normalizer_v2_tests.txt
+          python3 evaluation/tests/test_tb21_dataset_policy.py | tee reports/dataset_policy_tests.txt
+          python3 evaluation/tests/test_m1b17i_task_policy.py | tee reports/task_selection_tests.txt
+          scripts/gha_m1b17i_sanity.sh | tee reports/compact_sanity_summary.txt
+      - name: Install exact Harbor and resolve immutable dataset
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -LsSf --retry 0 https://astral.sh/uv/install.sh | sh
+          export PATH="$HOME/.local/bin:$PATH"
+          uv tool install 'harbor==0.21.0'
+          test "$(harbor --version)" = 0.21.0
+          harbor --version | tee reports/harbor_version.txt
+          env -u HARBOR_API_KEY "$HOME/.local/share/uv/tools/harbor/bin/python" scripts/gha_tb21_resolve_m1b17i.py
+      - name: Execute five frozen Oracle trials sequentially
+        id: trials
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          env -u HARBOR_API_KEY python3 scripts/gha_m1b17i_controller.py | tee reports/controller.log
+      - name: Scan reached evidence
+        id: scan
+        if: always()
+        shell: bash
+        run: scripts/public_secret_scan.py --artifact-mode reports | tee reports/secret_scan.txt
+      - name: Upload reached evidence
+        if: always() && steps.scan.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: m1b17i-multi-task-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/**
+          if-no-files-found: error
+          retention-days: 14
