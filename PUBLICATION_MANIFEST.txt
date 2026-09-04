@@ -52,6 +52,7 @@ scripts/gha_m1b17i_controller.py
 scripts/sanity_typed.py
 scripts/gha_m1b19_controller.py
 scripts/public_secret_scan.py
+scripts/resolve_harbor_python.py
 .github/workflows/gha-m1c1-no-model.yml
 evaluation/agents/dsh_harbor_adapter/__init__.py
 evaluation/agents/dsh_harbor_adapter/adapter.py
@@ -59,5 +60,7 @@ evaluation/agents/dsh_harbor_adapter/lifecycle.py
 evaluation/agents/dsh_harbor_adapter/materializer.py
 evaluation/tests/test_m1c_lifecycle.py
 evaluation/tests/test_m1c_materializer_isolation.py
+evaluation/tests/test_m1c_harbor_interpreter.py
 harnesses/adapter_smoke_h0/harness.json
 schemas/harness_spec_v1.schema.json
+docs/milestone_1c1_harbor_interpreter_correction.md

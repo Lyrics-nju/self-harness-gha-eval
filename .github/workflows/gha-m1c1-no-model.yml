@@ -8,33 +8,64 @@ jobs:
   smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Initialize sanitized diagnostics
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          {
+            printf 'runner_os=%s\n' "${RUNNER_OS:-NOT_AVAILABLE}"
+            printf 'runner_arch=%s\n' "${RUNNER_ARCH:-NOT_AVAILABLE}"
+            printf 'image_os=%s\n' "${ImageOS:-NOT_AVAILABLE}"
+            printf 'image_version=%s\n' "${ImageVersion:-NOT_AVAILABLE}"
+            uname -a
+            grep -E '^(NAME|VERSION|IMAGE_VERSION)=' /etc/os-release || true
+          } > diagnostics/runner.txt
       - name: Install exact Harbor and pinned DSH
+        id: install
         run: |
           set -euo pipefail
-          pipx install harbor==0.21.0
-          harbor --version | tee harbor-version.txt
-          git clone --filter=blob:none https://github.com/deepseek-ai/deepseek-harness.git /tmp/deepseek-harness
-          git -C /tmp/deepseek-harness checkout --detach b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
-          test "$(git -C /tmp/deepseek-harness rev-parse HEAD)" = b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
-          corepack enable
-          cd /tmp/deepseek-harness
-          pnpm install --frozen-lockfile
-          pnpm run build
-          git status --porcelain=v1 --untracked-files=no | tee "$GITHUB_WORKSPACE/dsh-status.txt"
-          test ! -s "$GITHUB_WORKSPACE/dsh-status.txt"
+          {
+            pipx install harbor==0.21.0
+            command -v harbor
+            readlink -f "$(command -v harbor)"
+            harbor --version
+            python3 scripts/resolve_harbor_python.py \
+              --expected-version 0.21.0 \
+              --registration-import evaluation.agents.dsh_harbor_adapter \
+              --json | tee diagnostics/harbor-resolution.json
+            HARBOR_PY="$(python3 -c 'import json; print(json.load(open("diagnostics/harbor-resolution.json"))["interpreter"])')"
+            test -x "$HARBOR_PY"
+            printf 'HARBOR_PY=%s\n' "$HARBOR_PY" >> "$GITHUB_ENV"
+            git clone --filter=blob:none https://github.com/deepseek-ai/deepseek-harness.git /tmp/deepseek-harness
+            git -C /tmp/deepseek-harness checkout --detach b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
+            test "$(git -C /tmp/deepseek-harness rev-parse HEAD)" = b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
+            corepack enable
+            cd /tmp/deepseek-harness
+            pnpm install --frozen-lockfile
+            pnpm run build
+            git status --porcelain=v1 --untracked-files=no | tee "$GITHUB_WORKSPACE/diagnostics/dsh-status.txt"
+            test ! -s "$GITHUB_WORKSPACE/diagnostics/dsh-status.txt"
+            printf 'PASS\n' > "$GITHUB_WORKSPACE/diagnostics/install-status.txt"
+          } 2>&1 | tee diagnostics/install.log
       - name: Adapter, materializer, isolation, lifecycle
+        id: adapter
         run: |
           set -euo pipefail
-          HPY="$HOME/.local/share/uv/tools/harbor/bin/python"
-          test -x "$HPY"
-          PYTHONPATH=. "$HPY" -m unittest evaluation.tests.test_m1c_materializer_isolation evaluation.tests.test_m1c_lifecycle -v 2>&1 | tee adapter-tests.txt
-          PYTHONPATH=. "$HPY" -c 'from evaluation.agents.dsh_harbor_adapter import DshHarborAdapter; assert DshHarborAdapter.name()=="dsh-harbor-adapter-v1"; assert DshHarborAdapter.SUPPORTS_ATIF'
-          PYTHONPATH=. "$HPY" - <<'PY'
+          {
+            test -x "$HARBOR_PY"
+            PYTHONPATH=. "$HARBOR_PY" -m unittest \
+              evaluation.tests.test_m1c_harbor_interpreter \
+              evaluation.tests.test_m1c_materializer_isolation \
+              evaluation.tests.test_m1c_lifecycle -v
+            PYTHONPATH=. "$HARBOR_PY" -c 'from evaluation.agents.dsh_harbor_adapter import DshHarborAdapter; assert DshHarborAdapter.name()=="dsh-harbor-adapter-v1"; assert DshHarborAdapter.SUPPORTS_ATIF'
+            PYTHONPATH=. "$HARBOR_PY" - <<'PY'
           from pathlib import Path
           from evaluation.agents.dsh_harbor_adapter.materializer import materialize,create_run
           import tempfile
@@ -45,28 +76,63 @@ jobs:
               assert x['dsh-home'] != y['dsh-home']
               assert a['candidate_spec_sha256']
           PY
+            printf 'PASS\n' > diagnostics/adapter-status.txt
+          } 2>&1 | tee diagnostics/adapter-tests.txt
       - name: Frozen evaluator and secret scan
+        id: evaluator
         run: |
           set -euo pipefail
-          python3 -m unittest evaluation.tests.test_docker_endpoint_policy evaluation.tests.test_harbor_exception_policy evaluation.tests.test_normalizer_v2_public evaluation.tests.test_tb21_dataset_policy -v 2>&1 | tee evaluator-tests.txt
-          python3 scripts/public_secret_scan.py . | tee secret-scan.txt
-          grep -q SECRET_SCAN_PASS secret-scan.txt
-          sha256sum evaluation/normalize_outcome_v2.py scripts/harbor_exception_policy.py scripts/docker_endpoint_policy.py scripts/tb21_dataset_policy.py > evaluator-core.sha256
-          uname -a > runner.txt
-          grep '^IMAGE_VERSION=' /etc/os-release >> runner.txt || true
+          {
+            python3 -m unittest evaluation.tests.test_docker_endpoint_policy evaluation.tests.test_harbor_exception_policy evaluation.tests.test_normalizer_v2_public evaluation.tests.test_tb21_dataset_policy -v
+            python3 scripts/public_secret_scan.py .
+            sha256sum evaluation/normalize_outcome_v2.py scripts/harbor_exception_policy.py scripts/docker_endpoint_policy.py scripts/tb21_dataset_policy.py > diagnostics/evaluator-core.sha256
+            printf 'PASS\n' > diagnostics/evaluator-status.txt
+          } 2>&1 | tee diagnostics/evaluator-tests.txt
+      - name: Prepare failure-safe sanitized artifacts
+        id: diagnostics
+        if: always()
+        env:
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          ADAPTER_OUTCOME: ${{ steps.adapter.outcome }}
+          EVALUATOR_OUTCOME: ${{ steps.evaluator.outcome }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifact-stage/diagnostics artifact-stage/source
+          {
+            printf 'install=%s\n' "$INSTALL_OUTCOME"
+            printf 'adapter=%s\n' "$ADAPTER_OUTCOME"
+            printf 'evaluator=%s\n' "$EVALUATOR_OUTCOME"
+            if [ "$INSTALL_OUTCOME" != success ]; then
+              printf 'classification=M1C1_INSTALL_OR_DISCOVERY_FAILURE\n'
+            elif [ "$ADAPTER_OUTCOME" != success ]; then
+              printf 'classification=M1C1_ADAPTER_TEST_FAILURE\n'
+            elif [ "$EVALUATOR_OUTCOME" != success ]; then
+              printf 'classification=M1C1_EVALUATOR_OR_SECRET_SCAN_FAILURE\n'
+            else
+              printf 'classification=NO_MODEL_GHA_GREEN\n'
+            fi
+          } > diagnostics/failure-classification.txt
+          cp -a diagnostics/. artifact-stage/diagnostics/
+          cp -a evaluation/agents/dsh_harbor_adapter artifact-stage/source/
+          cp evaluation/tests/test_m1c_*.py artifact-stage/source/
+          cp scripts/resolve_harbor_python.py artifact-stage/source/
+          cp schemas/harness_spec_v1.schema.json artifact-stage/source/
+          cp harnesses/adapter_smoke_h0/harness.json artifact-stage/source/
+          set +e
+          python3 scripts/public_secret_scan.py --artifact-mode artifact-stage > artifact-secret-scan.txt 2>&1
+          scan_rc=$?
+          set -e
+          cp artifact-secret-scan.txt artifact-stage/diagnostics/artifact-secret-scan.txt
+          find artifact-stage -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > artifact-stage/SHA256SUMS
+          if [ "$scan_rc" -eq 0 ]; then
+            echo 'safe=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'safe=false' >> "$GITHUB_OUTPUT"
+            exit "$scan_rc"
+          fi
       - uses: actions/upload-artifact@v4
+        if: always() && steps.diagnostics.outputs.safe == 'true'
         with:
           name: m1c1-no-model-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            adapter-tests.txt
-            evaluator-tests.txt
-            evaluator-core.sha256
-            harbor-version.txt
-            dsh-status.txt
-            secret-scan.txt
-            runner.txt
-            evaluation/agents/dsh_harbor_adapter/
-            evaluation/tests/test_m1c_*.py
-            schemas/harness_spec_v1.schema.json
-            harnesses/adapter_smoke_h0/harness.json
+          path: artifact-stage/
           if-no-files-found: error
