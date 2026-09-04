@@ -1,0 +1,72 @@
+name: M1C.1 No-Model DSH Adapter Smoke
+on:
+  workflow_dispatch:
+concurrency:
+  group: m1c1-no-model
+  cancel-in-progress: false
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install exact Harbor and pinned DSH
+        run: |
+          set -euo pipefail
+          pipx install harbor==0.21.0
+          harbor --version | tee harbor-version.txt
+          git clone --filter=blob:none https://github.com/deepseek-ai/deepseek-harness.git /tmp/deepseek-harness
+          git -C /tmp/deepseek-harness checkout --detach b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
+          test "$(git -C /tmp/deepseek-harness rev-parse HEAD)" = b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
+          corepack enable
+          cd /tmp/deepseek-harness
+          pnpm install --frozen-lockfile
+          pnpm run build
+          git status --porcelain=v1 --untracked-files=no | tee "$GITHUB_WORKSPACE/dsh-status.txt"
+          test ! -s "$GITHUB_WORKSPACE/dsh-status.txt"
+      - name: Adapter, materializer, isolation, lifecycle
+        run: |
+          set -euo pipefail
+          HPY="$HOME/.local/share/uv/tools/harbor/bin/python"
+          test -x "$HPY"
+          PYTHONPATH=. "$HPY" -m unittest evaluation.tests.test_m1c_materializer_isolation evaluation.tests.test_m1c_lifecycle -v 2>&1 | tee adapter-tests.txt
+          PYTHONPATH=. "$HPY" -c 'from evaluation.agents.dsh_harbor_adapter import DshHarborAdapter; assert DshHarborAdapter.name()=="dsh-harbor-adapter-v1"; assert DshHarborAdapter.SUPPORTS_ATIF'
+          PYTHONPATH=. "$HPY" - <<'PY'
+          from pathlib import Path
+          from evaluation.agents.dsh_harbor_adapter.materializer import materialize,create_run
+          import tempfile
+          with tempfile.TemporaryDirectory() as td:
+              root=Path(td)
+              _,a=materialize(Path('harnesses/adapter_smoke_h0/harness.json'),root/'candidate')
+              x=create_run(root/'runs','run-a'); y=create_run(root/'runs','run-b')
+              assert x['dsh-home'] != y['dsh-home']
+              assert a['candidate_spec_sha256']
+          PY
+      - name: Frozen evaluator and secret scan
+        run: |
+          set -euo pipefail
+          python3 -m unittest evaluation.tests.test_docker_endpoint_policy evaluation.tests.test_harbor_exception_policy evaluation.tests.test_normalizer_v2_public evaluation.tests.test_tb21_dataset_policy -v 2>&1 | tee evaluator-tests.txt
+          python3 scripts/public_secret_scan.py . | tee secret-scan.txt
+          grep -q SECRET_SCAN_PASS secret-scan.txt
+          sha256sum evaluation/normalize_outcome_v2.py scripts/harbor_exception_policy.py scripts/docker_endpoint_policy.py scripts/tb21_dataset_policy.py > evaluator-core.sha256
+          uname -a > runner.txt
+          grep '^IMAGE_VERSION=' /etc/os-release >> runner.txt || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: m1c1-no-model-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            adapter-tests.txt
+            evaluator-tests.txt
+            evaluator-core.sha256
+            harbor-version.txt
+            dsh-status.txt
+            secret-scan.txt
+            runner.txt
+            evaluation/agents/dsh_harbor_adapter/
+            evaluation/tests/test_m1c_*.py
+            schemas/harness_spec_v1.schema.json
+            harnesses/adapter_smoke_h0/harness.json
+          if-no-files-found: error
