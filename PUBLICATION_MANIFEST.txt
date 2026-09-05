@@ -72,4 +72,5 @@ configs/model_profile_deepseek_v4_pro_v1.yaml
 scripts/gha_m1c1_live_controller.py
 scripts/gha_tb21_resolve_m1c1.py
 evaluation/tests/test_m1c_live_workflow.py
+evaluation/tests/test_m1c_live_invocation_edges.py
 docs/milestone_1c1_live_workflow.md

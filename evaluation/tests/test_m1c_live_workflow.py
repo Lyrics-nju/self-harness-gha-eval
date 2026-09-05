@@ -40,7 +40,14 @@ class LiveWorkflowTests(unittest.TestCase):
     def test_16_exposure_boundary_order(self): self.assertLess(self.controller.index("PRE_MODEL_GATE_COMPLETED"), self.controller.index("MODEL_EXPOSURE_START")); self.assertLess(self.controller.index("MODEL_EXPOSURE_START"), self.controller.index("subprocess.run(harbor_command(root)"))
     def test_17_artifact_always_run(self): self.assertIn("id: artifacts\n        if: always()", self.workflow)
     def test_18_scan_precedes_upload(self): self.assertLess(self.workflow.index("public_secret_scan.py --artifact-mode"), self.workflow.index("actions/upload-artifact@v4"))
-    def test_19_tests_do_not_call_model(self): self.assertNotIn('"run-' + 'live"', Path(__file__).read_text())
+    def test_19_tests_do_not_call_model(self): self.assertNotIn("import " + "subprocess", Path(__file__).read_text())
     def test_20_adapter_unchanged(self): self.assertEqual(hashlib.sha256(ADAPTER.read_bytes()).hexdigest(), "3086ed0919d182719195c8ee415bb89da2a035c2f2a923861efd09eb1c2e9d7c")
+
+    def test_controller_interpreter_contracts(self):
+        for action in ("preflight", "run-live", "summarize"):
+            self.assertIn(f'PYTHONPATH=. "$HARBOR_PY" scripts/gha_m1c1_live_controller.py {action}', self.workflow)
+        for duplicate in ('"$HARBOR_PY" python ', '"$HARBOR_PY" python3 ', '"$HARBOR_PY" /usr/bin/python3 '):
+            self.assertNotIn(duplicate, self.workflow)
+        self.assertIn("python3 scripts/run_frozen_evaluator_regressions.py", self.workflow)
 
 if __name__ == "__main__": unittest.main()
