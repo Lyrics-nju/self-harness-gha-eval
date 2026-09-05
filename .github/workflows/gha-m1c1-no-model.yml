@@ -83,7 +83,8 @@ jobs:
         run: |
           set -euo pipefail
           {
-            python3 -m unittest evaluation.tests.test_docker_endpoint_policy evaluation.tests.test_harbor_exception_policy evaluation.tests.test_normalizer_v2_public evaluation.tests.test_tb21_dataset_policy -v
+            python3 scripts/run_frozen_evaluator_regressions.py --output-dir diagnostics/frozen-evaluator
+            python3 -m unittest evaluation.tests.test_m1c_frozen_invocation_contract -v
             python3 scripts/public_secret_scan.py .
             sha256sum evaluation/normalize_outcome_v2.py scripts/harbor_exception_policy.py scripts/docker_endpoint_policy.py scripts/tb21_dataset_policy.py > diagnostics/evaluator-core.sha256
             printf 'PASS\n' > diagnostics/evaluator-status.txt
@@ -116,6 +117,8 @@ jobs:
           cp -a evaluation/agents/dsh_harbor_adapter artifact-stage/source/
           cp evaluation/tests/test_m1c_*.py artifact-stage/source/
           cp scripts/resolve_harbor_python.py artifact-stage/source/
+          cp scripts/run_frozen_evaluator_regressions.py artifact-stage/source/
+          cp reports/m1c_frozen_test_execution_contract_audit.md artifact-stage/source/
           cp schemas/harness_spec_v1.schema.json artifact-stage/source/
           cp harnesses/adapter_smoke_h0/harness.json artifact-stage/source/
           set +e
