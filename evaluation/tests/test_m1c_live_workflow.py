@@ -45,9 +45,10 @@ class LiveWorkflowTests(unittest.TestCase):
 
     def test_controller_interpreter_contracts(self):
         for action in ("preflight", "run-live", "summarize"):
-            self.assertIn(f'PYTHONPATH=. "$HARBOR_PY" scripts/gha_m1c1_live_controller.py {action}', self.workflow)
+            self.assertIn(f'PYTHONPATH="$ADAPTER_SOURCE_ROOT${{PYTHONPATH:+:$PYTHONPATH}}" "$HARBOR_PY" scripts/gha_m1c1_live_controller.py {action}', self.workflow)
         for duplicate in ('"$HARBOR_PY" python ', '"$HARBOR_PY" python3 ', '"$HARBOR_PY" /usr/bin/python3 '):
             self.assertNotIn(duplicate, self.workflow)
         self.assertIn("python3 scripts/run_frozen_evaluator_regressions.py", self.workflow)
+        self.assertIn("ADAPTER_SOURCE_ROOT: ${{ github.workspace }}", self.workflow)
 
 if __name__ == "__main__": unittest.main()

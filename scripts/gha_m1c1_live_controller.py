@@ -19,6 +19,8 @@ PROFILE_SHA256 = "2102539e0c35c4168f2c91b2383f95e39042576a64612060e55a126a57bf7f
 HARBOR_VERSION = "0.21.0"
 AGENT = "evaluation.agents.dsh_harbor_adapter.adapter:DshHarborAdapter"
 JOB_NAME = "m1c1-live-single"
+UNEXPOSED = "UNEXPOSED"
+EXPOSED = "MODEL_EXPOSED_INTEGRATION_ONLY"
 
 
 def sanitize_text(text: str, credential: str) -> str:
@@ -47,6 +49,26 @@ def write_json(path: Path, value: object) -> None:
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def harbor_environment(root: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    raw_source = env.get("ADAPTER_SOURCE_ROOT", "")
+    source = Path(raw_source)
+    expected = root.resolve()
+    if not raw_source or not source.is_absolute() or source.resolve() != expected:
+        raise RuntimeError("M1C_ADAPTER_SOURCE_ROOT_INVALID")
+    if not (expected / "evaluation/agents/dsh_harbor_adapter/adapter.py").is_file():
+        raise RuntimeError("M1C_ADAPTER_SOURCE_ROOT_MISSING")
+    prior = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(expected) + (os.pathsep + prior if prior else "")
+    return env
+
+
+def exposure_classification(marker_present: bool, provider_request_count: int | None) -> str:
+    if marker_present and isinstance(provider_request_count, int) and provider_request_count >= 1:
+        return EXPOSED
+    return UNEXPOSED
 
 
 def harbor_command(root: Path) -> list[str]:
@@ -81,6 +103,7 @@ def preflight(root: Path) -> int:
         write_json(root / "reports/pre-model-gate.json", {"status": "FAIL", "classification": "M1C_MODEL_PROFILE_DRIFT", "actual": actual_profile, "expected": PROFILE_SHA256})
         return 2
     dsh = Path(os.environ["DSH_SOURCE"])
+    adapter_source = Path(os.environ.get("ADAPTER_SOURCE_ROOT", ""))
     checks = {
         "runner": os.environ.get("ImageOS") == "ubuntu24",
         "harbor": subprocess.run(["harbor", "--version"], text=True, capture_output=True).stdout.strip() == HARBOR_VERSION,
@@ -89,6 +112,9 @@ def preflight(root: Path) -> int:
         "profile_sha": True,
         "secret_name_available": os.environ.get("M1C_SECRET_AVAILABLE") == "true",
         "runtime_outside_dsh": dsh.resolve() not in (root / "work/runtime").resolve().parents,
+        "adapter_source_absolute": adapter_source.is_absolute(),
+        "adapter_source_exact": adapter_source.resolve() == root.resolve(),
+        "adapter_source_present": (adapter_source / "evaluation/agents/dsh_harbor_adapter/adapter.py").is_file(),
     }
     try:
         from evaluation.agents.dsh_harbor_adapter import DshHarborAdapter
@@ -118,7 +144,7 @@ def run_live(root: Path) -> int:
     exposure.write_text("MODEL_EXPOSURE_START\n")
     start = time.monotonic()
     with stdout.open("wb") as out, stderr.open("wb") as err:
-        proc = subprocess.run(harbor_command(root), stdout=out, stderr=err, env=os.environ.copy())
+        proc = subprocess.run(harbor_command(root), stdout=out, stderr=err, env=harbor_environment(root))
     profile = (root / "configs/model_profile_deepseek_v4_pro_v1.yaml").read_text()
     credential_name = next(line.split(":", 1)[1].strip() for line in profile.splitlines() if line.startswith("credential_environment_name:"))
     credential = os.environ.get(credential_name, "")
@@ -180,10 +206,12 @@ def summarize(root: Path) -> int:
     }
     write_json(root / "reports/live-summary.json", summary)
     integration_green = len(trials) == 1 and result is not None and verifier is not None and normalized and normalized.get("outcome") in {"PASS", "TASK_FAIL"} and not exception
+    exposure = exposure_classification(bool(summary["model_exposure_started"]), summary["api_request_count"])
     write_json(root / "reports/post-live-decision.json", {
         "classification": "M1C_LIVE_TRIAL_GREEN" if integration_green else "M1C_LIVE_TRIAL_NOT_GREEN",
-        "create_private_exclusion_after_authorized_retrieval": bool(summary["model_exposure_started"]),
-        "exclusion_classification": "MODEL_EXPOSED_INTEGRATION_ONLY" if summary["model_exposure_started"] else None,
+        "exposure_classification": exposure,
+        "create_private_exclusion_after_authorized_retrieval": exposure == EXPOSED,
+        "exclusion_classification": EXPOSED if exposure == EXPOSED else None,
         "adapter_freeze_allowed": integration_green,
     })
     return 0 if integration_green else 1

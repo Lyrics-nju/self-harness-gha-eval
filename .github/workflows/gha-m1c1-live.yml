@@ -16,6 +16,7 @@ jobs:
     timeout-minutes: 90
     env:
       PYTHONDONTWRITEBYTECODE: '1'
+      ADAPTER_SOURCE_ROOT: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -54,11 +55,11 @@ jobs:
           set -euo pipefail
           python3 scripts/run_frozen_evaluator_regressions.py --output-dir reports/frozen-evaluator
           python3 -m unittest evaluation.tests.test_m1c_frozen_invocation_contract -v
-          HARBOR_PY="$HARBOR_PY" PYTHONPATH=. python3 -m unittest evaluation.tests.test_m1c_live_invocation_edges -v
-          PYTHONPATH=. "$HARBOR_PY" -m unittest evaluation.tests.test_m1c_harbor_interpreter evaluation.tests.test_m1c_materializer_isolation evaluation.tests.test_m1c_lifecycle -v
-          PYTHONPATH=. "$HARBOR_PY" -c 'from evaluation.agents.dsh_harbor_adapter import DshHarborAdapter; assert DshHarborAdapter.name()=="dsh-harbor-adapter-v1"; assert DshHarborAdapter.SUPPORTS_ATIF'
-          PYTHONPATH=. "$HARBOR_PY" scripts/gha_tb21_resolve_m1c1.py
-          PYTHONPATH=. "$HARBOR_PY" -c 'from pathlib import Path; from evaluation.agents.dsh_harbor_adapter.materializer import materialize,create_run; materialize(Path("harnesses/adapter_smoke_h0/harness.json"),Path("work/candidate")); create_run(Path("work"),"runtime")'
+          HARBOR_PY="$HARBOR_PY" PYTHONPATH="$ADAPTER_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 -m unittest evaluation.tests.test_m1c_live_invocation_edges evaluation.tests.test_m1c_custom_agent_import_contract -v
+          PYTHONPATH="$ADAPTER_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$HARBOR_PY" -m unittest evaluation.tests.test_m1c_harbor_interpreter evaluation.tests.test_m1c_materializer_isolation evaluation.tests.test_m1c_lifecycle -v
+          PYTHONPATH="$ADAPTER_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$HARBOR_PY" -c 'from evaluation.agents.dsh_harbor_adapter import DshHarborAdapter; assert DshHarborAdapter.name()=="dsh-harbor-adapter-v1"; assert DshHarborAdapter.SUPPORTS_ATIF'
+          PYTHONPATH="$ADAPTER_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$HARBOR_PY" scripts/gha_tb21_resolve_m1c1.py
+          PYTHONPATH="$ADAPTER_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$HARBOR_PY" -c 'from pathlib import Path; from evaluation.agents.dsh_harbor_adapter.materializer import materialize,create_run; materialize(Path("harnesses/adapter_smoke_h0/harness.json"),Path("work/candidate")); create_run(Path("work"),"runtime")'
           sha256sum configs/model_profile_deepseek_v4_pro_v1.yaml > reports/model-profile.sha256
           sha256sum evaluation/agents/dsh_harbor_adapter/*.py > reports/adapter-source.sha256
           sha256sum evaluation/normalize_outcome_v2.py scripts/harbor_exception_policy.py scripts/docker_endpoint_policy.py scripts/tb21_dataset_policy.py > reports/evaluator-core.sha256
@@ -68,20 +69,20 @@ jobs:
           M1C_SECRET_AVAILABLE: ${{ secrets.DEEPSEEK_API_KEY != '' }}
         run: |
           set -euo pipefail
-          PYTHONPATH=. "$HARBOR_PY" scripts/gha_m1c1_live_controller.py preflight
+          PYTHONPATH="$ADAPTER_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$HARBOR_PY" scripts/gha_m1c1_live_controller.py preflight
       - name: Execute exactly one fixed live Harbor trial
         id: live
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           set -euo pipefail
-          PYTHONPATH=. "$HARBOR_PY" scripts/gha_m1c1_live_controller.py run-live
+          PYTHONPATH="$ADAPTER_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$HARBOR_PY" scripts/gha_m1c1_live_controller.py run-live
       - name: Normalize and classify live result
         id: summarize
         if: always() && steps.gate.outcome == 'success'
         run: |
           set -euo pipefail
-          PYTHONPATH=. "$HARBOR_PY" scripts/gha_m1c1_live_controller.py summarize
+          PYTHONPATH="$ADAPTER_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$HARBOR_PY" scripts/gha_m1c1_live_controller.py summarize
       - name: Prepare failure-safe sanitized artifacts
         id: artifacts
         if: always()

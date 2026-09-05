@@ -28,6 +28,7 @@ class InvocationEdgeTests(unittest.TestCase):
         candidate = root / "work/candidate/adapter_smoke_h0"
         candidate.mkdir(parents=True)
         shutil.copy2(PROFILE, root / "configs/model_profile_deepseek_v4_pro_v1.yaml")
+        shutil.copytree(ROOT / "evaluation/agents/dsh_harbor_adapter", root / "evaluation/agents/dsh_harbor_adapter")
         (candidate / "manifest.json").write_text('{"candidate_id":"adapter_smoke_h0"}\n')
         (candidate / "candidate.cordis.patch.yml").write_text("plugins: []\n")
         dsh = root / "dsh-source"; dsh.mkdir()
@@ -50,6 +51,7 @@ esac
             "ImageOS": "ubuntu24",
             "M1C_SECRET_AVAILABLE": "true",
             "DSH_SOURCE": str(dsh),
+            "ADAPTER_SOURCE_ROOT": str(root),
             "PYTHONDONTWRITEBYTECODE": "1",
         })
         return root, env
