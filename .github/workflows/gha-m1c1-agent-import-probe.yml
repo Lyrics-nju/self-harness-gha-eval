@@ -1,0 +1,53 @@
+name: M1C.1 Harbor Agent Import No-Model Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  agent-import-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      ADAPTER_SOURCE_ROOT: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install exact Harbor and resolve its interpreter
+        run: |
+          set -euo pipefail
+          mkdir -p reports work
+          pipx install harbor==0.21.0
+          test "$(harbor --version)" = 0.21.0
+          python3 scripts/resolve_harbor_python.py --expected-version 0.21.0 --json > reports/harbor-resolution.json
+          HARBOR_PY="$(python3 -c 'import json; print(json.load(open("reports/harbor-resolution.json"))["interpreter"])')"
+          printf 'HARBOR_PY=%s\n' "$HARBOR_PY" >> "$GITHUB_ENV"
+      - name: Install interpreter-level source registration and probe fresh processes
+        run: |
+          set -euo pipefail
+          env -u PYTHONPATH python3 scripts/m1c_adapter_pth.py \
+            --harbor-python "$HARBOR_PY" \
+            --source-root "$ADAPTER_SOURCE_ROOT" \
+            --workspace "$GITHUB_WORKSPACE" \
+            --output reports/agent-import-probe.json
+          sha256sum evaluation/agents/dsh_harbor_adapter/*.py > reports/adapter-source.sha256
+          test "$(sha256sum evaluation/agents/dsh_harbor_adapter/adapter.py | cut -d' ' -f1)" = 3086ed0919d182719195c8ee415bb89da2a035c2f2a923861efd09eb1c2e9d7c
+      - name: Prepare sanitized artifacts
+        id: artifacts
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p artifact-stage
+          cp reports/harbor-resolution.json reports/agent-import-probe.json reports/adapter-source.sha256 artifact-stage/
+          python3 scripts/public_secret_scan.py --artifact-mode artifact-stage > artifact-stage/secret-scan.txt
+          find artifact-stage -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > artifact-stage/SHA256SUMS
+          echo 'safe=true' >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.artifacts.outputs.safe == 'true'
+        with:
+          name: m1c1-agent-import-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifact-stage/
+          if-no-files-found: error
+          retention-days: 14

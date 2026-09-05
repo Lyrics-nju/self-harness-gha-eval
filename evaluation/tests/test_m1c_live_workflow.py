@@ -51,4 +51,13 @@ class LiveWorkflowTests(unittest.TestCase):
         self.assertIn("python3 scripts/run_frozen_evaluator_regressions.py", self.workflow)
         self.assertIn("ADAPTER_SOURCE_ROOT: ${{ github.workspace }}", self.workflow)
 
+    def test_interpreter_level_wiring_precedes_live(self):
+        self.assertIn("scripts/m1c_adapter_pth.py", self.workflow)
+        self.assertIn("env -u PYTHONPATH", self.workflow)
+        self.assertLess(self.workflow.index("scripts/m1c_adapter_pth.py"), self.workflow.index("Execute exactly one fixed live Harbor trial"))
+
+    def test_import_wiring_evidence_is_failure_safe(self):
+        self.assertIn('"harbor-resolution.json"', self.controller)
+        self.assertIn('"adapter-pth-qualification.json"', self.controller)
+
 if __name__ == "__main__": unittest.main()

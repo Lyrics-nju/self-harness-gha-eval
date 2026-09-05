@@ -75,3 +75,7 @@ evaluation/tests/test_m1c_live_workflow.py
 evaluation/tests/test_m1c_live_invocation_edges.py
 evaluation/tests/test_m1c_custom_agent_import_contract.py
 docs/milestone_1c1_live_workflow.md
+.github/workflows/gha-m1c1-agent-import-probe.yml
+evaluation/tests/test_m1c_adapter_pth.py
+reports/m1c_production_import_path_propagation_audit.md
+scripts/m1c_adapter_pth.py

@@ -226,7 +226,8 @@ def stage(root: Path) -> int:
         "runner.txt", "pre-model-gate.json", "PRE_MODEL_GATE_COMPLETED", "MODEL_EXPOSURE_START",
         "candidate-identity.json", "harbor-process.json", "normalizer-v2.json", "live-summary.json",
         "post-live-decision.json", "frozen-evaluator", "evaluator-core.sha256", "adapter-source.sha256",
-        "model-profile.sha256", "dataset-resolution.json", "secret-scan.txt", "sanitized-stdout.txt",
+        "model-profile.sha256", "dataset-resolution.json", "harbor-resolution.json",
+        "adapter-pth-qualification.json", "secret-scan.txt", "sanitized-stdout.txt",
         "sanitized-stderr.txt", "sanitized-trial-result.json", "sanitized-dsh-events",
     ]
     for name in safe:

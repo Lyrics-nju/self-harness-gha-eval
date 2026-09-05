@@ -39,9 +39,14 @@ jobs:
           set -euo pipefail
           pipx install harbor==0.21.0
           test "$(harbor --version)" = 0.21.0
-          python3 scripts/resolve_harbor_python.py --expected-version 0.21.0 --registration-import evaluation.agents.dsh_harbor_adapter --json > reports/harbor-resolution.json
+          python3 scripts/resolve_harbor_python.py --expected-version 0.21.0 --json > reports/harbor-resolution.json
           HARBOR_PY="$(python3 -c 'import json; print(json.load(open("reports/harbor-resolution.json"))["interpreter"])')"
           printf 'HARBOR_PY=%s\n' "$HARBOR_PY" >> "$GITHUB_ENV"
+          env -u PYTHONPATH python3 scripts/m1c_adapter_pth.py \
+            --harbor-python "$HARBOR_PY" \
+            --source-root "$ADAPTER_SOURCE_ROOT" \
+            --workspace "$GITHUB_WORKSPACE" \
+            --output reports/adapter-pth-qualification.json
           git clone --filter=blob:none https://github.com/deepseek-ai/deepseek-harness.git /tmp/m1c1-dsh-source
           git -C /tmp/m1c1-dsh-source checkout --detach b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
           test "$(git -C /tmp/m1c1-dsh-source rev-parse HEAD)" = b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
