@@ -67,3 +67,9 @@ harnesses/adapter_smoke_h0/harness.json
 schemas/harness_spec_v1.schema.json
 docs/milestone_1c1_harbor_interpreter_correction.md
 reports/m1c_frozen_test_execution_contract_audit.md
+.github/workflows/gha-m1c1-live.yml
+configs/model_profile_deepseek_v4_pro_v1.yaml
+scripts/gha_m1c1_live_controller.py
+scripts/gha_tb21_resolve_m1c1.py
+evaluation/tests/test_m1c_live_workflow.py
+docs/milestone_1c1_live_workflow.md

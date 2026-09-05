@@ -1,0 +1,104 @@
+name: M1C.1 Live DSH Adapter Integration Smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m1c1-live-single
+  cancel-in-progress: false
+
+jobs:
+  live-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Initialize isolated runtime and runner evidence
+        run: |
+          set -euo pipefail
+          mkdir -p reports work/candidate work/jobs
+          {
+            printf 'runner_os=%s\n' "${RUNNER_OS:-NOT_AVAILABLE}"
+            printf 'runner_arch=%s\n' "${RUNNER_ARCH:-NOT_AVAILABLE}"
+            printf 'image_os=%s\n' "${ImageOS:-NOT_AVAILABLE}"
+            printf 'image_version=%s\n' "${ImageVersion:-NOT_AVAILABLE}"
+            uname -a
+          } > reports/runner.txt
+      - name: Install exact Harbor and pinned DSH
+        id: install
+        run: |
+          set -euo pipefail
+          pipx install harbor==0.21.0
+          test "$(harbor --version)" = 0.21.0
+          python3 scripts/resolve_harbor_python.py --expected-version 0.21.0 --registration-import evaluation.agents.dsh_harbor_adapter --json > reports/harbor-resolution.json
+          HARBOR_PY="$(python3 -c 'import json; print(json.load(open("reports/harbor-resolution.json"))["interpreter"])')"
+          printf 'HARBOR_PY=%s\n' "$HARBOR_PY" >> "$GITHUB_ENV"
+          git clone --filter=blob:none https://github.com/deepseek-ai/deepseek-harness.git /tmp/m1c1-dsh-source
+          git -C /tmp/m1c1-dsh-source checkout --detach b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
+          test "$(git -C /tmp/m1c1-dsh-source rev-parse HEAD)" = b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
+          corepack enable
+          (cd /tmp/m1c1-dsh-source && pnpm install --frozen-lockfile && pnpm run build)
+          test -z "$(git -C /tmp/m1c1-dsh-source status --porcelain --untracked-files=no)"
+          printf 'DSH_SOURCE=/tmp/m1c1-dsh-source\n' >> "$GITHUB_ENV"
+      - name: Frozen pre-model regressions and identities
+        id: frozen
+        run: |
+          set -euo pipefail
+          python3 scripts/run_frozen_evaluator_regressions.py --output-dir reports/frozen-evaluator
+          python3 -m unittest evaluation.tests.test_m1c_frozen_invocation_contract -v
+          PYTHONPATH=. "$HARBOR_PY" -m unittest evaluation.tests.test_m1c_harbor_interpreter evaluation.tests.test_m1c_materializer_isolation evaluation.tests.test_m1c_lifecycle -v
+          PYTHONPATH=. "$HARBOR_PY" -c 'from evaluation.agents.dsh_harbor_adapter import DshHarborAdapter; assert DshHarborAdapter.name()=="dsh-harbor-adapter-v1"; assert DshHarborAdapter.SUPPORTS_ATIF'
+          PYTHONPATH=. "$HARBOR_PY" scripts/gha_tb21_resolve_m1c1.py
+          PYTHONPATH=. "$HARBOR_PY" -c 'from pathlib import Path; from evaluation.agents.dsh_harbor_adapter.materializer import materialize,create_run; materialize(Path("harnesses/adapter_smoke_h0/harness.json"),Path("work/candidate")); create_run(Path("work"),"runtime")'
+          sha256sum configs/model_profile_deepseek_v4_pro_v1.yaml > reports/model-profile.sha256
+          sha256sum evaluation/agents/dsh_harbor_adapter/*.py > reports/adapter-source.sha256
+          sha256sum evaluation/normalize_outcome_v2.py scripts/harbor_exception_policy.py scripts/docker_endpoint_policy.py scripts/tb21_dataset_policy.py > reports/evaluator-core.sha256
+      - name: Complete pre-model hard gate
+        id: gate
+        env:
+          M1C_SECRET_AVAILABLE: ${{ secrets.DEEPSEEK_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. "$HARBOR_PY" python3 scripts/gha_m1c1_live_controller.py preflight
+      - name: Execute exactly one fixed live Harbor trial
+        id: live
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. "$HARBOR_PY" python3 scripts/gha_m1c1_live_controller.py run-live
+      - name: Normalize and classify live result
+        id: summarize
+        if: always() && steps.gate.outcome == 'success'
+        run: |
+          set -euo pipefail
+          PYTHONPATH=. "$HARBOR_PY" python3 scripts/gha_m1c1_live_controller.py summarize
+      - name: Prepare failure-safe sanitized artifacts
+        id: artifacts
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/gha_m1c1_live_controller.py stage
+          set +e
+          python3 scripts/public_secret_scan.py --artifact-mode artifact-stage > reports/secret-scan.txt 2>&1
+          scan_rc=$?
+          set -e
+          cp reports/secret-scan.txt artifact-stage/secret-scan.txt
+          find artifact-stage -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > artifact-stage/SHA256SUMS
+          test "$scan_rc" -eq 0
+          echo 'safe=true' >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.artifacts.outputs.safe == 'true'
+        with:
+          name: m1c1-live-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifact-stage/
+          if-no-files-found: error
+          retention-days: 14
