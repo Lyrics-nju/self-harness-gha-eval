@@ -102,6 +102,18 @@ esac
         self.assertIn("python3 scripts/run_frozen_evaluator_regressions.py", workflow)
         self.assertNotIn('"$HARBOR_PY" scripts/run_frozen_evaluator_regressions.py', workflow)
 
+    def test_09_no_model_preflight_requires_no_credential(self):
+        with tempfile.TemporaryDirectory() as td:
+            root, env = self.fixture(Path(td))
+            env.pop("M1C_SECRET_AVAILABLE", None)
+            env.pop("DEEPSEEK_" + "API_KEY", None)
+            env["M1C_NO_MODEL_PREFLIGHT"] = "true"
+            proc = subprocess.run([self.harbor_python, str(CONTROLLER), "preflight", "--root", str(root)], cwd=ROOT, env=env, text=True, capture_output=True)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            report = json.loads((root / "reports/pre-model-gate.json").read_text())
+            self.assertEqual(report["mode"], "NO_MODEL")
+            self.assertTrue(report["checks"]["credential_contract"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -104,13 +104,18 @@ def preflight(root: Path) -> int:
         return 2
     dsh = Path(os.environ["DSH_SOURCE"])
     adapter_source = Path(os.environ.get("ADAPTER_SOURCE_ROOT", ""))
+    no_model = os.environ.get("M1C_NO_MODEL_PREFLIGHT") == "true"
     checks = {
         "runner": os.environ.get("ImageOS") == "ubuntu24",
         "harbor": subprocess.run(["harbor", "--version"], text=True, capture_output=True).stdout.strip() == HARBOR_VERSION,
         "dsh_commit": subprocess.run(["git", "-C", str(dsh), "rev-parse", "HEAD"], text=True, capture_output=True).stdout.strip() == DSH_COMMIT,
         "dsh_clean": not subprocess.run(["git", "-C", str(dsh), "status", "--porcelain", "--untracked-files=no"], text=True, capture_output=True).stdout.strip(),
         "profile_sha": True,
-        "secret_name_available": os.environ.get("M1C_SECRET_AVAILABLE") == "true",
+        "credential_contract": (
+            os.environ.get("M1C_SECRET_AVAILABLE") == "true"
+            if not no_model
+            else not os.environ.get("DEEPSEEK_" + "API_KEY")
+        ),
         "runtime_outside_dsh": dsh.resolve() not in (root / "work/runtime").resolve().parents,
         "adapter_source_absolute": adapter_source.is_absolute(),
         "adapter_source_exact": adapter_source.resolve() == root.resolve(),
@@ -128,7 +133,7 @@ def preflight(root: Path) -> int:
         checks["adapter_or_materialization"] = False
         write_json(root / "reports/pre-model-gate-exception.json", {"type": type(exc).__name__, "message": str(exc)})
     ok = all(checks.values())
-    write_json(root / "reports/pre-model-gate.json", {"status": "PASS" if ok else "FAIL", "checks": checks, "model_profile_sha256": actual_profile, "dsh_commit": DSH_COMMIT, "harbor_version": HARBOR_VERSION})
+    write_json(root / "reports/pre-model-gate.json", {"status": "PASS" if ok else "FAIL", "mode": "NO_MODEL" if no_model else "LIVE", "checks": checks, "model_profile_sha256": actual_profile, "dsh_commit": DSH_COMMIT, "harbor_version": HARBOR_VERSION})
     if ok:
         (root / "reports/PRE_MODEL_GATE_COMPLETED").write_text("PRE_MODEL_GATE_COMPLETED\n")
     return 0 if ok else 1

@@ -79,3 +79,6 @@ docs/milestone_1c1_live_workflow.md
 evaluation/tests/test_m1c_adapter_pth.py
 reports/m1c_production_import_path_propagation_audit.md
 scripts/m1c_adapter_pth.py
+.github/workflows/gha-m1c1-live-preflight-probe.yml
+evaluation/tests/test_m1c_preflight_ordering.py
+reports/m1c_legacy_negative_import_test_isolation_audit.md

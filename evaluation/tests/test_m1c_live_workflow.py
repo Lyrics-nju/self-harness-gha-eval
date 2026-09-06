@@ -60,4 +60,10 @@ class LiveWorkflowTests(unittest.TestCase):
         self.assertIn('"harbor-resolution.json"', self.controller)
         self.assertIn('"adapter-pth-qualification.json"', self.controller)
 
+    def test_legacy_negatives_precede_pth(self):
+        self.assertLess(self.workflow.index("Verify legacy no-wiring negatives"), self.workflow.index("Install and qualify interpreter-level"))
+
+    def test_legacy_negatives_run_once(self):
+        self.assertEqual(self.workflow.count("evaluation.tests.test_m1c_live_invocation_edges evaluation.tests.test_m1c_custom_agent_import_contract"), 1)
+
 if __name__ == "__main__": unittest.main()

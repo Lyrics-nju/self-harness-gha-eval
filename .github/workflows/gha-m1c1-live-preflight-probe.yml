@@ -1,4 +1,4 @@
-name: M1C.1 Live DSH Adapter Integration Smoke
+name: M1C.1 Full Live Pre-Model No-Model Probe
 
 on:
   workflow_dispatch:
@@ -6,14 +6,10 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: m1c1-live-single
-  cancel-in-progress: false
-
 jobs:
-  live-smoke:
+  full-pre-model:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
     env:
       PYTHONDONTWRITEBYTECODE: '1'
       ADAPTER_SOURCE_ROOT: ${{ github.workspace }}
@@ -26,15 +22,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p reports work/candidate work/jobs
-          {
-            printf 'runner_os=%s\n' "${RUNNER_OS:-NOT_AVAILABLE}"
-            printf 'runner_arch=%s\n' "${RUNNER_ARCH:-NOT_AVAILABLE}"
-            printf 'image_os=%s\n' "${ImageOS:-NOT_AVAILABLE}"
-            printf 'image_version=%s\n' "${ImageVersion:-NOT_AVAILABLE}"
-            uname -a
-          } > reports/runner.txt
+          uname -a > reports/runner.txt
       - name: Install exact Harbor and pinned DSH
-        id: install
         run: |
           set -euo pipefail
           pipx install harbor==0.21.0
@@ -50,21 +39,14 @@ jobs:
           test -z "$(git -C /tmp/m1c1-dsh-source status --porcelain --untracked-files=no)"
           printf 'DSH_SOURCE=/tmp/m1c1-dsh-source\n' >> "$GITHUB_ENV"
       - name: Verify legacy no-wiring negatives before production registration
-        id: negative
         run: |
           set -euo pipefail
           HARBOR_PY="$HARBOR_PY" PYTHONPATH="$ADAPTER_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 -m unittest evaluation.tests.test_m1c_live_invocation_edges evaluation.tests.test_m1c_custom_agent_import_contract -v
       - name: Install and qualify interpreter-level adapter registration
-        id: wiring
         run: |
           set -euo pipefail
-          env -u PYTHONPATH python3 scripts/m1c_adapter_pth.py \
-            --harbor-python "$HARBOR_PY" \
-            --source-root "$ADAPTER_SOURCE_ROOT" \
-            --workspace "$GITHUB_WORKSPACE" \
-            --output reports/adapter-pth-qualification.json
+          env -u PYTHONPATH python3 scripts/m1c_adapter_pth.py --harbor-python "$HARBOR_PY" --source-root "$ADAPTER_SOURCE_ROOT" --workspace "$GITHUB_WORKSPACE" --output reports/adapter-pth-qualification.json
       - name: Frozen pre-model regressions and identities
-        id: frozen
         run: |
           set -euo pipefail
           python3 scripts/run_frozen_evaluator_regressions.py --output-dir reports/frozen-evaluator
@@ -76,44 +58,30 @@ jobs:
           sha256sum configs/model_profile_deepseek_v4_pro_v1.yaml > reports/model-profile.sha256
           sha256sum evaluation/agents/dsh_harbor_adapter/*.py > reports/adapter-source.sha256
           sha256sum evaluation/normalize_outcome_v2.py scripts/harbor_exception_policy.py scripts/docker_endpoint_policy.py scripts/tb21_dataset_policy.py > reports/evaluator-core.sha256
-      - name: Complete pre-model hard gate
-        id: gate
+      - name: Complete no-model pre-model hard gate
         env:
-          M1C_SECRET_AVAILABLE: ${{ secrets.DEEPSEEK_API_KEY != '' }}
+          M1C_NO_MODEL_PREFLIGHT: 'true'
         run: |
           set -euo pipefail
           PYTHONPATH="$ADAPTER_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$HARBOR_PY" scripts/gha_m1c1_live_controller.py preflight
-      - name: Execute exactly one fixed live Harbor trial
-        id: live
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        run: |
-          set -euo pipefail
-          PYTHONPATH="$ADAPTER_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$HARBOR_PY" scripts/gha_m1c1_live_controller.py run-live
-      - name: Normalize and classify live result
-        id: summarize
-        if: always() && steps.gate.outcome == 'success'
-        run: |
-          set -euo pipefail
-          PYTHONPATH="$ADAPTER_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$HARBOR_PY" scripts/gha_m1c1_live_controller.py summarize
-      - name: Prepare failure-safe sanitized artifacts
+          test -f reports/PRE_MODEL_GATE_COMPLETED
+          test ! -e reports/MODEL_EXPOSURE_START
+          printf '{"provider_requests":0,"deepseek_requests":0,"live_benchmark_trials":0,"dsh_live_sessions":0,"model_exposure_start":false}\n' > reports/full-pre-model-summary.json
+      - name: Prepare sanitized artifacts
         id: artifacts
         if: always()
         run: |
           set -euo pipefail
           python3 scripts/gha_m1c1_live_controller.py stage
-          set +e
-          python3 scripts/public_secret_scan.py --artifact-mode artifact-stage > reports/secret-scan.txt 2>&1
-          scan_rc=$?
-          set -e
+          cp reports/full-pre-model-summary.json artifact-stage/ 2>/dev/null || true
+          python3 scripts/public_secret_scan.py --artifact-mode artifact-stage > reports/secret-scan.txt
           cp reports/secret-scan.txt artifact-stage/secret-scan.txt
           find artifact-stage -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > artifact-stage/SHA256SUMS
-          test "$scan_rc" -eq 0
           echo 'safe=true' >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         if: always() && steps.artifacts.outputs.safe == 'true'
         with:
-          name: m1c1-live-${{ github.run_id }}-${{ github.run_attempt }}
+          name: m1c1-full-pre-model-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifact-stage/
           if-no-files-found: error
           retention-days: 14
