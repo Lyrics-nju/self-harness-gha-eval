@@ -38,7 +38,9 @@ class LiveWorkflowTests(unittest.TestCase):
     def test_14_harbor_version_frozen(self): self.assertEqual(controller.HARBOR_VERSION, "0.21.0"); self.assertIn("harbor==0.21.0", self.workflow)
     def test_15_gate_precedes_live(self): self.assertLess(self.workflow.index("Complete pre-model hard gate"), self.workflow.index("Execute exactly one fixed live Harbor trial"))
     def test_16_exposure_boundary_order(self): self.assertLess(self.controller.index("PRE_MODEL_GATE_COMPLETED"), self.controller.index("MODEL_EXPOSURE_START")); self.assertLess(self.controller.index("MODEL_EXPOSURE_START"), self.controller.index("subprocess.run(harbor_command(root)"))
-    def test_17_artifact_always_run(self): self.assertIn("id: artifacts\n        if: always()", self.workflow)
+    def test_17_artifact_lanes_always_run(self):
+        self.assertIn("id: bulk\n        if: always()", self.workflow)
+        self.assertIn("id: safe_core\n        if: always()", self.workflow)
     def test_18_scan_precedes_upload(self): self.assertLess(self.workflow.index("public_secret_scan.py --artifact-mode"), self.workflow.index("actions/upload-artifact@v4"))
     def test_19_tests_do_not_call_model(self): self.assertNotIn("import " + "subprocess", Path(__file__).read_text())
     def test_20_adapter_unchanged(self): self.assertEqual(hashlib.sha256(ADAPTER.read_bytes()).hexdigest(), "3086ed0919d182719195c8ee415bb89da2a035c2f2a923861efd09eb1c2e9d7c")
@@ -59,6 +61,14 @@ class LiveWorkflowTests(unittest.TestCase):
     def test_import_wiring_evidence_is_failure_safe(self):
         self.assertIn('"harbor-resolution.json"', self.controller)
         self.assertIn('"adapter-pth-qualification.json"', self.controller)
+
+    def test_safe_core_upload_is_independent_of_bulk(self):
+        self.assertLess(self.workflow.index("Prepare and scan bulk sanitized evidence"),
+                        self.workflow.index("Prepare and scan independent safe core evidence"))
+        self.assertIn("steps.safe_core.outputs.safe == 'true'", self.workflow)
+        self.assertIn("steps.bulk.outputs.safe == 'true'", self.workflow)
+        self.assertIn("BLOCKED_BY_SECRET_SCAN", self.workflow)
+        self.assertIn('"safe-core": safe_core', self.controller)
 
     def test_legacy_negatives_precede_pth(self):
         self.assertLess(self.workflow.index("Verify legacy no-wiring negatives"), self.workflow.index("Install and qualify interpreter-level"))

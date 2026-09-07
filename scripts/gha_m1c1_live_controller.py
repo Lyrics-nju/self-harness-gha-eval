@@ -14,11 +14,11 @@ from pathlib import Path
 
 try:
     from m1c_postlive_observability import (
-        build_partial_manifest, capture_raw, discover_trial, parse_result, provider_evidence, write_json,
+        build_partial_manifest, build_safe_core, capture_raw, discover_trial, parse_result, provider_evidence, write_json,
     )
 except ModuleNotFoundError:  # importlib-based repository tests
     from scripts.m1c_postlive_observability import (
-        build_partial_manifest, capture_raw, discover_trial, parse_result, provider_evidence, write_json,
+        build_partial_manifest, build_safe_core, capture_raw, discover_trial, parse_result, provider_evidence, write_json,
     )
 
 TASK_ID = "terminal-bench/chess-best-move"
@@ -30,6 +30,7 @@ AGENT = "evaluation.agents.dsh_harbor_adapter.adapter:DshHarborAdapter"
 JOB_NAME = "m1c1-live-single"
 UNEXPOSED = "UNEXPOSED"
 EXPOSED = "MODEL_EXPOSED_INTEGRATION_ONLY"
+INDETERMINATE = "EXPOSURE_INDETERMINATE_AFTER_LIVE_ARTIFACT_LOSS"
 
 
 def sanitize_text(text: str, credential: str) -> str:
@@ -72,6 +73,8 @@ def harbor_environment(root: Path) -> dict[str, str]:
 def exposure_classification(marker_present: bool, provider_request_count: int | None) -> str:
     if marker_present and isinstance(provider_request_count, int) and provider_request_count >= 1:
         return EXPOSED
+    if marker_present and provider_request_count is None:
+        return INDETERMINATE
     return UNEXPOSED
 
 
@@ -264,17 +267,23 @@ def stage(root: Path) -> int:
             "sanitized-dsh-events",
         )
     }
-    build_partial_manifest(root, root / "artifact-stage", expected)
+    build_partial_manifest(root, root / "bulk-artifact-stage", expected)
+    return 0
+
+
+def safe_core(root: Path) -> int:
+    build_safe_core(root, JOB_NAME, TASK_ID)
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("preflight", "run-live", "summarize", "stage"))
+    parser.add_argument("action", choices=("preflight", "run-live", "summarize", "safe-core", "stage"))
     parser.add_argument("--root", type=Path, default=Path.cwd())
     args = parser.parse_args()
     root = args.root.resolve()
-    return {"preflight": preflight, "run-live": run_live, "summarize": summarize, "stage": stage}[args.action](root)
+    return {"preflight": preflight, "run-live": run_live, "summarize": summarize,
+            "safe-core": safe_core, "stage": stage}[args.action](root)
 
 
 if __name__ == "__main__":

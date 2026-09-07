@@ -157,6 +157,69 @@ def provider_evidence(raw_root: Path) -> dict:
             "evidence": explicit}
 
 
+def provider_status(evidence: dict, *, phase_reached: bool) -> str:
+    """Map only explicit observational evidence to a frozen exposure status."""
+    count = evidence.get("provider_request_count")
+    if evidence.get("status") == "PRESENT" and isinstance(count, int):
+        return "PROVEN_NONZERO" if count >= 1 else "PROVEN_ZERO"
+    return "INDETERMINATE" if phase_reached else "NOT_REACHED"
+
+
+def build_safe_core(root: Path, job_name: str, task_id: str) -> dict:
+    """Build strict scalar-only evidence independently of bulk raw staging."""
+    discovery = discover_trial(root / "work/jobs", job_name)
+    summary_path = root / "reports/live-summary.json"
+    try:
+        summary = json.loads(summary_path.read_text()) if summary_path.is_file() else {}
+    except (OSError, ValueError):
+        summary = {}
+    process_path = root / "reports/harbor-process.json"
+    try:
+        process = json.loads(process_path.read_text()) if process_path.is_file() else {}
+    except (OSError, ValueError):
+        process = {}
+    marker = (root / "reports/MODEL_EXPOSURE_START").is_file()
+    request = provider_evidence(root / "reports/raw-evidence")
+    status = provider_status(request, phase_reached=marker)
+    evidence = {
+        "schema_version": 1,
+        "run_id": str(__import__("os").environ.get("GITHUB_RUN_ID", "NOT_AVAILABLE")),
+        "run_attempt": str(__import__("os").environ.get("GITHUB_RUN_ATTEMPT", "NOT_AVAILABLE")),
+        "workflow_commit": str(__import__("os").environ.get("GITHUB_SHA", "NOT_AVAILABLE")),
+        "task_id": task_id,
+        "harbor_process_exit": process.get("exit_code", "NOT_AVAILABLE"),
+        "harbor_trial_id": discovery.get("trial_id") or "NOT_AVAILABLE",
+        "trial_result_status": discovery.get("status", "NOT_AVAILABLE"),
+        "dsh_session_id": summary.get("dsh_session_id") or "NOT_AVAILABLE",
+        "dsh_startup_status": summary.get("dsh_startup_status", "NOT_AVAILABLE"),
+        "dsh_event_log_status": summary.get("dsh_event_log_status", "NOT_AVAILABLE"),
+        "provider_request_status": status,
+        "provider_request_count": request.get("provider_request_count") if status in {"PROVEN_ZERO", "PROVEN_NONZERO"} else None,
+        "deepseek_request_status": status,
+        "deepseek_request_count": request.get("provider_request_count") if status in {"PROVEN_ZERO", "PROVEN_NONZERO"} else None,
+        "verifier_status": "PRESENT" if summary.get("verifier_result_present") else "NOT_AVAILABLE",
+        "raw_reward": summary.get("raw_reward", "NOT_AVAILABLE"),
+        "normalizer_status": summary.get("normalizer_status", "NOT_AVAILABLE"),
+        "normalizer_outcome": summary.get("normalizer_outcome") or "NOT_AVAILABLE",
+        "pre_model_gate_completed": (root / "reports/PRE_MODEL_GATE_COMPLETED").is_file(),
+        "model_exposure_start": marker,
+        "exposure_classification": (
+            "MODEL_EXPOSED_INTEGRATION_ONLY" if status == "PROVEN_NONZERO"
+            else "UNEXPOSED" if status in {"PROVEN_ZERO", "NOT_REACHED"}
+            else "EXPOSURE_INDETERMINATE_AFTER_LIVE_ARTIFACT_LOSS"
+        ),
+        "safe_core_lane": "GENERATED",
+        "bulk_artifact_lane": str(__import__("os").environ.get("M1C_BULK_STATUS", "PENDING_SCAN")),
+    }
+    write_json(root / "safe-core-stage/safe_live_evidence.json", evidence)
+    write_json(root / "safe-core-stage/SAFE_CORE_MANIFEST.json", {
+        "schema_version": 1, "allowlisted_files": ["safe_live_evidence.json"]})
+    files = sorted(p for p in (root / "safe-core-stage").iterdir() if p.is_file() and p.name != "SHA256SUMS")
+    (root / "safe-core-stage/SHA256SUMS").write_text(
+        "".join(f"{sha256(path)}  {path.name}\n" for path in files), encoding="utf-8")
+    return evidence
+
+
 def build_partial_manifest(root: Path, stage_root: Path, expected: dict[str, str]) -> dict:
     """Stage available evidence; optional absence is represented, never fatal."""
     if stage_root.exists():

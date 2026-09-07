@@ -96,25 +96,55 @@ jobs:
         run: |
           set -euo pipefail
           PYTHONPATH="$ADAPTER_SOURCE_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$HARBOR_PY" scripts/gha_m1c1_live_controller.py summarize
-      - name: Prepare failure-safe sanitized artifacts
-        id: artifacts
+      - name: Prepare and scan bulk sanitized evidence
+        id: bulk
         if: always()
         run: |
           set -euo pipefail
           python3 scripts/gha_m1c1_live_controller.py stage
           set +e
-          python3 scripts/public_secret_scan.py --artifact-mode artifact-stage 2>&1 | tee reports/secret-scan.txt
+          python3 scripts/public_secret_scan.py --artifact-mode bulk-artifact-stage 2>&1 | tee reports/bulk-secret-scan.txt
           scan_rc=${PIPESTATUS[0]}
           set -e
-          cp reports/secret-scan.txt artifact-stage/secret-scan.txt
-          find artifact-stage -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > artifact-stage/SHA256SUMS
-          test "$scan_rc" -eq 0
-          sha256sum -c artifact-stage/SHA256SUMS
+          cp reports/bulk-secret-scan.txt bulk-artifact-stage/secret-scan.txt
+          find bulk-artifact-stage -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > bulk-artifact-stage/SHA256SUMS
+          sha256sum -c bulk-artifact-stage/SHA256SUMS
+          if test "$scan_rc" -eq 0; then
+            echo 'safe=true' >> "$GITHUB_OUTPUT"
+            echo 'status=BULK_ARTIFACT_UPLOAD_PASS' >> "$GITHUB_OUTPUT"
+          else
+            echo 'safe=false' >> "$GITHUB_OUTPUT"
+            echo 'status=BLOCKED_BY_SECRET_SCAN' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Prepare and scan independent safe core evidence
+        id: safe_core
+        if: always()
+        env:
+          M1C_BULK_STATUS: ${{ steps.bulk.outputs.status }}
+        run: |
+          set -euo pipefail
+          python3 scripts/gha_m1c1_live_controller.py safe-core
+          python3 scripts/public_secret_scan.py --artifact-mode safe-core-stage 2>&1 | tee reports/safe-core-secret-scan.txt
+          cp reports/safe-core-secret-scan.txt safe-core-stage/secret-scan.txt
+          find safe-core-stage -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > safe-core-stage/SHA256SUMS
+          sha256sum -c safe-core-stage/SHA256SUMS
           echo 'safe=true' >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
-        if: always() && steps.artifacts.outputs.safe == 'true'
+        if: always() && steps.safe_core.outputs.safe == 'true'
         with:
-          name: m1c1-live-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifact-stage/
+          name: m1c1-safe-core-${{ github.run_id }}-${{ github.run_attempt }}
+          path: safe-core-stage/
           if-no-files-found: error
           retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.bulk.outputs.safe == 'true'
+        with:
+          name: m1c1-bulk-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bulk-artifact-stage/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Enforce evidence safety gates
+        if: always()
+        run: |
+          test "${{ steps.safe_core.outputs.safe }}" = true
+          test "${{ steps.bulk.outputs.safe }}" = true

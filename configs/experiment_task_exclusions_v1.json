@@ -10,6 +10,16 @@
       "eligible_for_D_sealed": false,
       "historical_run_id": 34042734063,
       "provider_exposure_asserted": false
+    },
+    {
+      "task_id": "terminal-bench/chess-best-move",
+      "classification": "EXPOSURE_INDETERMINATE_AFTER_LIVE_ARTIFACT_LOSS",
+      "reason": "live integration crossed MODEL_EXPOSURE_START and completed the Harbor trial step, but provider-request evidence was not preserved because normalization and failure-safe artifact preparation failed and no artifact was uploaded; therefore non-exposure cannot be established",
+      "eligible_for_D_mine": false,
+      "eligible_for_D_gate": false,
+      "eligible_for_D_sealed": false,
+      "historical_run_id": 34113571888,
+      "provider_exposure_asserted": false
     }
   ]
 }

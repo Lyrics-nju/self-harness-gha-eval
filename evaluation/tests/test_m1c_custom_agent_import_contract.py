@@ -97,9 +97,9 @@ class CustomAgentImportContractTests(unittest.TestCase):
     def test_12_adapter_source_hash_unchanged(self):
         self.assertEqual(hashlib.sha256(ADAPTER.read_bytes()).hexdigest(), "3086ed0919d182719195c8ee415bb89da2a035c2f2a923861efd09eb1c2e9d7c")
 
-    def test_13_marker_without_provider_request_is_unexposed(self):
+    def test_13_marker_without_provider_request_is_fail_closed(self):
         self.assertEqual(controller.exposure_classification(True, 0), controller.UNEXPOSED)
-        self.assertEqual(controller.exposure_classification(True, None), controller.UNEXPOSED)
+        self.assertEqual(controller.exposure_classification(True, None), controller.INDETERMINATE)
 
     def test_14_provider_request_after_marker_is_exposed(self):
         self.assertEqual(controller.exposure_classification(True, 1), controller.EXPOSED)

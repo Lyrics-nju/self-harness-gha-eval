@@ -1,0 +1,30 @@
+name: M1C.1 Evidence Safety No-Model Qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evidence-safety:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run production scanner and safe-core regression matrices
+        run: |
+          set -euo pipefail
+          python3 -m unittest \
+            evaluation.tests.test_public_secret_scan_structured \
+            evaluation.tests.test_m1c_evidence_safety \
+            evaluation.tests.test_m1c_postlive_observability -v
+          python3 scripts/m1c_evidence_safety_probe.py
+          python3 scripts/public_secret_scan.py --artifact-mode evidence-safety-artifact
+          (cd evidence-safety-artifact && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: m1c1-evidence-safety-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence-safety-artifact/
+          if-no-files-found: error
+          retention-days: 14

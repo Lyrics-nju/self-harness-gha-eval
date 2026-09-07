@@ -29,7 +29,7 @@ class IntegrationTaskBindingTests(unittest.TestCase):
             if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "TASK" for t in node.targets)
         )
 
-    def test_01_eligible_count(self):
+    def test_01_historical_selection_record_is_unchanged(self):
         self.assertEqual(self.record["eligible_count"], 23)
         self.assertEqual(len(self.record["eligible_task_ids"]), 23)
 
@@ -47,11 +47,19 @@ class IntegrationTaskBindingTests(unittest.TestCase):
         payload = ("\n".join(self.record["eligible_task_ids"]) + "\n").encode()
         self.assertEqual(hashlib.sha256(payload).hexdigest(), self.record["eligible_order_sha256"])
 
-    def test_05_selected_is_member_and_not_excluded(self):
+    def test_05_selected_is_now_quarantined_without_rebinding(self):
         selected = self.record["selected_task_id"]
         excluded = {entry["task_id"] for entry in self.exclusions["exclusions"]}
         self.assertIn(selected, self.record["eligible_task_ids"])
-        self.assertNotIn(selected, excluded)
+        self.assertIn(selected, excluded)
+        self.assertEqual(selected, "terminal-bench/chess-best-move")
+
+    def test_05b_remaining_formal_eligible_count(self):
+        excluded = {entry["task_id"] for entry in self.exclusions["exclusions"]}
+        remaining = [task for task in self.record["eligible_task_ids"] if task not in excluded]
+        self.assertEqual(len(remaining), 22)
+        self.assertNotIn("terminal-bench/caffe-cifar-10", remaining)
+        self.assertNotIn("terminal-bench/chess-best-move", remaining)
 
     def test_06_live_preflight_record_identity(self):
         selected = self.record["selected_task_id"]
@@ -74,6 +82,14 @@ class IntegrationTaskBindingTests(unittest.TestCase):
                          "7624f87b86ecc227fd79415b9440aaf39d888c3fa6da520413aed179d69dc4e3")
         self.assertEqual(self.record["classification"], "M1C_INTEGRATION_ONLY_PENDING_EXPOSURE")
         self.assertEqual(self.record["selected_at_stage"], "M1C_PRE_FORMAL_SPLIT")
+
+    def test_09_both_quarantines_are_permanent(self):
+        by_id = {entry["task_id"]: entry for entry in self.exclusions["exclusions"]}
+        for task in ("terminal-bench/caffe-cifar-10", "terminal-bench/chess-best-move"):
+            self.assertEqual(by_id[task]["classification"], "EXPOSURE_INDETERMINATE_AFTER_LIVE_ARTIFACT_LOSS")
+            self.assertFalse(by_id[task]["eligible_for_D_mine"])
+            self.assertFalse(by_id[task]["eligible_for_D_gate"])
+            self.assertFalse(by_id[task]["eligible_for_D_sealed"])
 
 
 if __name__ == "__main__":

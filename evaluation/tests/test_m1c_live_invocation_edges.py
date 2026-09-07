@@ -31,7 +31,9 @@ class InvocationEdgeTests(unittest.TestCase):
         candidate.mkdir(parents=True)
         shutil.copy2(PROFILE, root / "configs/model_profile_deepseek_v4_pro_v1.yaml")
         shutil.copy2(SELECTION, root / "configs/m1c_integration_task_v2.json")
-        shutil.copy2(EXCLUSIONS, root / "configs/experiment_task_exclusions_v1.json")
+        historical = subprocess.check_output(
+            ["git", "-C", str(ROOT), "show", "HEAD:configs/experiment_task_exclusions_v1.json"])
+        (root / "configs/experiment_task_exclusions_v1.json").write_bytes(historical)
         shutil.copytree(ROOT / "evaluation/agents/dsh_harbor_adapter", root / "evaluation/agents/dsh_harbor_adapter")
         (candidate / "manifest.json").write_text('{"candidate_id":"adapter_smoke_h0"}\n')
         (candidate / "candidate.cordis.patch.yml").write_text("plugins: []\n")
@@ -75,7 +77,7 @@ esac
     def test_03_exact_controller_argv_is_accepted(self):
         proc = subprocess.run([self.harbor_python, str(CONTROLLER), "--help"], cwd=ROOT, text=True, capture_output=True)
         self.assertEqual(proc.returncode, 0)
-        for action in ("preflight", "run-live", "summarize", "stage"):
+        for action in ("preflight", "run-live", "summarize", "safe-core", "stage"):
             self.assertIn(action, proc.stdout)
 
     def test_04_missing_controller_file_fails_closed(self):
@@ -94,7 +96,7 @@ esac
             self.assertFalse(report["checks"]["adapter_or_materialization"])
 
     def test_06_system_python_lacks_harbor_context(self):
-        proc = subprocess.run([sys.executable, "-I", "-c", "import harbor"], text=True, capture_output=True)
+        proc = subprocess.run(["/usr/bin/python3", "-I", "-c", "import harbor"], text=True, capture_output=True)
         self.assertNotEqual(proc.returncode, 0)
 
     def test_07_resolved_harbor_python_context_is_valid(self):
