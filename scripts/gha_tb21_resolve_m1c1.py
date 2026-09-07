@@ -8,7 +8,7 @@ from harbor.registry.client.package import PackageDatasetClient
 
 SLUG = "terminal-bench/terminal-bench-2-1"
 DIGEST = "7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a"
-TASK = "terminal-bench/caffe-cifar-10"
+TASK = "terminal-bench/chess-best-move"
 
 async def main() -> None:
     if resolve_api_key() is not None:
