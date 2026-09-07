@@ -82,3 +82,9 @@ scripts/m1c_adapter_pth.py
 .github/workflows/gha-m1c1-live-preflight-probe.yml
 evaluation/tests/test_m1c_preflight_ordering.py
 reports/m1c_legacy_negative_import_test_isolation_audit.md
+.github/workflows/gha-m1c1-postlive-observability-probe.yml
+configs/experiment_task_exclusions_v1.json
+evaluation/tests/test_m1c_postlive_observability.py
+evaluation/tests/test_m1c_postlive_workflow.py
+reports/m1c_live_run_34042734063_forensic_audit.md
+scripts/m1c_postlive_observability.py

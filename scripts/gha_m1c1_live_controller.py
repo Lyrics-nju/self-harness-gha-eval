@@ -12,6 +12,15 @@ import sys
 import time
 from pathlib import Path
 
+try:
+    from m1c_postlive_observability import (
+        build_partial_manifest, capture_raw, discover_trial, parse_result, provider_evidence, write_json,
+    )
+except ModuleNotFoundError:  # importlib-based repository tests
+    from scripts.m1c_postlive_observability import (
+        build_partial_manifest, capture_raw, discover_trial, parse_result, provider_evidence, write_json,
+    )
+
 TASK_ID = "terminal-bench/caffe-cifar-10"
 DATASET = "terminal-bench/terminal-bench-2-1@sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a"
 DSH_COMMIT = "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e"
@@ -40,11 +49,6 @@ def sanitize_value(value: object, credential: str) -> object:
     if isinstance(value, str):
         return sanitize_text(value, credential)
     return value
-
-
-def write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def sha256(path: Path) -> str:
@@ -153,6 +157,9 @@ def run_live(root: Path) -> int:
     profile = (root / "configs/model_profile_deepseek_v4_pro_v1.yaml").read_text()
     credential_name = next(line.split(":", 1)[1].strip() for line in profile.splitlines() if line.startswith("credential_environment_name:"))
     credential = os.environ.get(credential_name, "")
+    # Raw-first: preserve the process streams and complete Harbor job tree before
+    # any TrialResult parsing or normalization can fail.
+    capture_raw(root, JOB_NAME, credential, credential_name)
     for source in (stdout, stderr):
         (root / "reports" / f"sanitized-{source.name}").write_text(sanitize_text(source.read_text(errors="replace"), credential))
     job = root / "work/jobs" / JOB_NAME
@@ -175,42 +182,53 @@ def run_live(root: Path) -> int:
     return proc.returncode
 
 
+def normalize_trial(root: Path, trial: Path, runner=subprocess.run) -> tuple[dict | None, str]:
+    normalized_path = root / "reports/normalizer-v2.json"
+    try:
+        completed = runner([sys.executable, str(root / "evaluation/normalize_outcome_v2.py"),
+                            str(trial), "--output", str(normalized_path)], check=False)
+        if completed.returncode != 0 or not normalized_path.is_file():
+            return None, "PARSE_FAILED"
+        value = json.loads(normalized_path.read_text())
+        return (value, "PRESENT") if isinstance(value, dict) else (None, "PARSE_FAILED")
+    except Exception as exc:
+        write_json(root / "reports/normalizer-error.json", {"type": type(exc).__name__, "message": str(exc)})
+        return None, "PARSE_FAILED"
+
+
 def summarize(root: Path) -> int:
     process_path = root / "reports/harbor-process.json"
     process = json.loads(process_path.read_text()) if process_path.is_file() else {"exit_code": None, "wall_seconds": None}
-    job = root / "work/jobs" / JOB_NAME
-    trials = sorted(p for p in job.iterdir() if p.is_dir()) if job.is_dir() else []
-    trial = trials[0] if len(trials) == 1 else None
-    result_path = trial / "result.json" if trial else None
-    try:
-        result = json.loads(result_path.read_text()) if result_path and result_path.is_file() else None
-    except (OSError, ValueError):
-        result = None
+    discovery = discover_trial(root / "work/jobs", JOB_NAME)
+    trial = Path(discovery["trial_dir"]) if discovery.get("trial_dir") else None
+    result, result_status = parse_result(discovery)
     normalized = None
-    if trial:
-        normalized_path = root / "reports/normalizer-v2.json"
-        subprocess.run([sys.executable, str(root / "evaluation/normalize_outcome_v2.py"), str(trial), "--output", str(normalized_path)], check=False)
-        if normalized_path.is_file():
-            normalized = json.loads(normalized_path.read_text())
+    normalizer_status = "NOT_REACHED"
+    if trial and result_status == "PRESENT":
+        normalized, normalizer_status = normalize_trial(root, trial)
     verifier = result.get("verifier_result") if isinstance(result, dict) else None
     reward = (verifier.get("rewards") or {}).get("reward") if isinstance(verifier, dict) else None
     exception = result.get("exception_info") if isinstance(result, dict) else None
+    request_evidence = provider_evidence(root / "reports/raw-evidence")
     summary = {
-        "task_id": TASK_ID, "maximum_intended_trials": 1, "actual_trial_count": len(trials),
+        "task_id": TASK_ID, "maximum_intended_trials": 1, "actual_trial_count": discovery.get("candidate_count", 0),
         "harbor_process_exit": process.get("exit_code"), "harbor_trial_id": trial.name if trial else None,
+        "result_discovery": discovery, "trial_result_status": result_status,
         "trial_result_present": result is not None, "trial_exception_info": exception,
         "raw_reward": reward, "verifier_result_present": verifier is not None,
+        "normalizer_status": normalizer_status,
         "normalizer_outcome": normalized.get("outcome") if normalized else None,
         "normalizer_reason": normalized.get("reason_code") if normalized else None,
         "dsh_session_id": ((result or {}).get("agent_info") or {}).get("session_id"),
         "dsh_process_exit": None, "dsh_event_log_status": "captured_if_present",
-        "tool_event_count": None, "api_request_count": None, "token_usage": None,
+        "tool_event_count": None, "api_request_count": request_evidence["provider_request_count"],
+        "provider_request_evidence": request_evidence, "token_usage": None,
         "wall_seconds": process.get("wall_seconds"), "timeout_evidence": None,
         "pre_model_gate_completed": (root / "reports/PRE_MODEL_GATE_COMPLETED").is_file(),
         "model_exposure_started": (root / "reports/MODEL_EXPOSURE_START").is_file(),
     }
     write_json(root / "reports/live-summary.json", summary)
-    integration_green = len(trials) == 1 and result is not None and verifier is not None and normalized and normalized.get("outcome") in {"PASS", "TASK_FAIL"} and not exception
+    integration_green = discovery.get("candidate_count") == 1 and result is not None and verifier is not None and normalized and normalized.get("outcome") in {"PASS", "TASK_FAIL"} and not exception
     exposure = exposure_classification(bool(summary["model_exposure_started"]), summary["api_request_count"])
     write_json(root / "reports/post-live-decision.json", {
         "classification": "M1C_LIVE_TRIAL_GREEN" if integration_green else "M1C_LIVE_TRIAL_NOT_GREEN",
@@ -223,22 +241,18 @@ def summarize(root: Path) -> int:
 
 
 def stage(root: Path) -> int:
-    stage_root = root / "artifact-stage"
-    if stage_root.exists():
-        shutil.rmtree(stage_root)
-    stage_root.mkdir()
-    safe = [
-        "runner.txt", "pre-model-gate.json", "PRE_MODEL_GATE_COMPLETED", "MODEL_EXPOSURE_START",
-        "candidate-identity.json", "harbor-process.json", "normalizer-v2.json", "live-summary.json",
-        "post-live-decision.json", "frozen-evaluator", "evaluator-core.sha256", "adapter-source.sha256",
-        "model-profile.sha256", "dataset-resolution.json", "harbor-resolution.json",
-        "adapter-pth-qualification.json", "secret-scan.txt", "sanitized-stdout.txt",
-        "sanitized-stderr.txt", "sanitized-trial-result.json", "sanitized-dsh-events",
-    ]
-    for name in safe:
-        source = root / "reports" / name
-        if source.is_dir(): shutil.copytree(source, stage_root / name)
-        elif source.is_file(): shutil.copy2(source, stage_root / name)
+    expected = {
+        name: "reports/" + name for name in (
+            "runner.txt", "pre-model-gate.json", "PRE_MODEL_GATE_COMPLETED", "MODEL_EXPOSURE_START",
+            "candidate-identity.json", "harbor-process.json", "raw-capture-manifest.json", "raw-evidence",
+            "normalizer-v2.json", "normalizer-error.json", "live-summary.json", "post-live-decision.json",
+            "frozen-evaluator", "evaluator-core.sha256", "adapter-source.sha256", "model-profile.sha256",
+            "dataset-resolution.json", "harbor-resolution.json", "adapter-pth-qualification.json",
+            "sanitized-stdout.txt", "sanitized-stderr.txt", "sanitized-trial-result.json",
+            "sanitized-dsh-events",
+        )
+    }
+    build_partial_manifest(root, root / "artifact-stage", expected)
     return 0
 
 

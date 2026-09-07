@@ -103,12 +103,13 @@ jobs:
           set -euo pipefail
           python3 scripts/gha_m1c1_live_controller.py stage
           set +e
-          python3 scripts/public_secret_scan.py --artifact-mode artifact-stage > reports/secret-scan.txt 2>&1
-          scan_rc=$?
+          python3 scripts/public_secret_scan.py --artifact-mode artifact-stage 2>&1 | tee reports/secret-scan.txt
+          scan_rc=${PIPESTATUS[0]}
           set -e
           cp reports/secret-scan.txt artifact-stage/secret-scan.txt
           find artifact-stage -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > artifact-stage/SHA256SUMS
           test "$scan_rc" -eq 0
+          sha256sum -c artifact-stage/SHA256SUMS
           echo 'safe=true' >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         if: always() && steps.artifacts.outputs.safe == 'true'

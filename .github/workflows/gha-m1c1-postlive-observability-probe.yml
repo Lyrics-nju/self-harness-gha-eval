@@ -1,0 +1,49 @@
+name: M1C.1 No-Model Post-Live Observability Qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postlive-observability:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install exact Harbor without running a trial
+        run: |
+          set -euo pipefail
+          pipx install harbor==0.21.0
+          test "$(harbor --version)" = 0.21.0
+      - name: Run production post-live fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          python3 -m unittest evaluation.tests.test_m1c_postlive_observability -v 2>&1 | tee reports/postlive-observability-tests.txt
+          grep -F 'Ran 12 tests' reports/postlive-observability-tests.txt
+          grep -F 'OK' reports/postlive-observability-tests.txt
+      - name: Verify production workflow contracts
+        run: |
+          set -euo pipefail
+          python3 -m unittest evaluation.tests.test_m1c_live_workflow evaluation.tests.test_m1c_postlive_workflow -v 2>&1 | tee reports/postlive-workflow-tests.txt
+      - name: Build partial-safe qualification artifact
+        id: artifacts
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/gha_m1c1_live_controller.py stage
+          cp reports/postlive-observability-tests.txt artifact-stage/ 2>/dev/null || true
+          cp reports/postlive-workflow-tests.txt artifact-stage/ 2>/dev/null || true
+          python3 scripts/public_secret_scan.py --artifact-mode artifact-stage | tee artifact-stage/secret-scan.txt
+          find artifact-stage -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > artifact-stage/SHA256SUMS
+          sha256sum -c artifact-stage/SHA256SUMS
+          echo 'safe=true' >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.artifacts.outputs.safe == 'true'
+        with:
+          name: m1c1-postlive-observability-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifact-stage/
+          if-no-files-found: error
+          retention-days: 14
