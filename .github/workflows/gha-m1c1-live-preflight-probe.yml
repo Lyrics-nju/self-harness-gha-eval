@@ -72,7 +72,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/gha_m1c1_live_controller.py stage
+          python3 scripts/gha_m1c1_live_controller.py stage-preflight
           cp reports/full-pre-model-summary.json artifact-stage/ 2>/dev/null || true
           python3 scripts/public_secret_scan.py --artifact-mode artifact-stage > reports/secret-scan.txt
           cp reports/secret-scan.txt artifact-stage/secret-scan.txt

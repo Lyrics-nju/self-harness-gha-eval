@@ -272,6 +272,20 @@ def stage(root: Path) -> int:
     return 0
 
 
+def stage_preflight(root: Path) -> int:
+    """Initialize and populate the no-model preflight artifact directory."""
+    expected = {
+        name: "reports/" + name for name in (
+            "runner.txt", "pre-model-gate.json", "PRE_MODEL_GATE_COMPLETED",
+            "full-pre-model-summary.json", "frozen-evaluator", "evaluator-core.sha256",
+            "adapter-source.sha256", "model-profile.sha256", "dataset-resolution.json",
+            "harbor-resolution.json", "adapter-pth-qualification.json",
+        )
+    }
+    build_partial_manifest(root, root / "artifact-stage", expected)
+    return 0
+
+
 def safe_core(root: Path) -> int:
     build_safe_core(root, JOB_NAME, TASK_ID)
     return 0
@@ -279,12 +293,12 @@ def safe_core(root: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("preflight", "run-live", "summarize", "safe-core", "stage"))
+    parser.add_argument("action", choices=("preflight", "run-live", "summarize", "safe-core", "stage", "stage-preflight"))
     parser.add_argument("--root", type=Path, default=Path.cwd())
     args = parser.parse_args()
     root = args.root.resolve()
     return {"preflight": preflight, "run-live": run_live, "summarize": summarize,
-            "safe-core": safe_core, "stage": stage}[args.action](root)
+            "safe-core": safe_core, "stage": stage, "stage-preflight": stage_preflight}[args.action](root)
 
 
 if __name__ == "__main__":

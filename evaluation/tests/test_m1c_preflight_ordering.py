@@ -1,10 +1,17 @@
+import importlib.util
 from pathlib import Path
+import shutil
+import tempfile
 import unittest
 
 ROOT = Path(__file__).parents[2]
 LIVE = (ROOT / ".github/workflows/gha-m1c1-live.yml").read_text()
 PROBE_PATH = ROOT / ".github/workflows/gha-m1c1-live-preflight-probe.yml"
 PROBE = PROBE_PATH.read_text()
+CONTROLLER_PATH = ROOT / "scripts/gha_m1c1_live_controller.py"
+spec = importlib.util.spec_from_file_location("m1c_preflight_stage_controller", CONTROLLER_PATH)
+controller = importlib.util.module_from_spec(spec); assert spec and spec.loader
+spec.loader.exec_module(controller)
 
 
 class PreflightOrderingTests(unittest.TestCase):
@@ -52,6 +59,35 @@ class PreflightOrderingTests(unittest.TestCase):
     def test_09_live_and_probe_share_pre_model_commands(self):
         for token in ("harbor==0.21.0", "scripts/resolve_harbor_python.py", "scripts/m1c_adapter_pth.py", "scripts/run_frozen_evaluator_regressions.py", "scripts/gha_m1c1_live_controller.py preflight"):
             self.assertIn(token, LIVE); self.assertIn(token, PROBE)
+
+    def test_10_preflight_stage_is_initialized_before_first_copy(self):
+        block = PROBE.split("- name: Prepare sanitized artifacts", 1)[1]
+        self.assertLess(block.index("stage-preflight"), block.index("cp reports/full-pre-model-summary.json"))
+        self.assertNotIn("gha_m1c1_live_controller.py stage\n", block)
+
+    def test_11_fresh_missing_directory_is_created_repeatedly(self):
+        for _ in range(2):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                reports = root / "reports"
+                reports.mkdir()
+                (reports / "full-pre-model-summary.json").write_text('{"provider_requests":0}\n')
+                destination = root / "artifact-stage"
+                self.assertFalse(destination.exists())
+                self.assertEqual(controller.stage_preflight(root), 0)
+                self.assertTrue(destination.is_dir())
+                self.assertTrue((destination / "EVIDENCE_MANIFEST.json").is_file())
+                scan = reports / "secret-scan.txt"
+                scan.write_text("SECRET_SCAN_PASS\n")
+                shutil.copy2(scan, destination / "secret-scan.txt")
+                self.assertEqual((destination / "secret-scan.txt").read_text(), "SECRET_SCAN_PASS\n")
+
+    def test_12_live_lanes_keep_independent_initializers_and_fail_closed_scan(self):
+        self.assertIn('build_partial_manifest(root, root / "bulk-artifact-stage", expected)', CONTROLLER_PATH.read_text())
+        self.assertIn('build_safe_core(root, JOB_NAME, TASK_ID)', CONTROLLER_PATH.read_text())
+        self.assertIn("BLOCKED_BY_SECRET_SCAN", LIVE)
+        self.assertIn("steps.safe_core.outputs.safe == 'true'", LIVE)
+        self.assertIn("steps.bulk.outputs.safe == 'true'", LIVE)
 
 
 if __name__ == "__main__": unittest.main()
