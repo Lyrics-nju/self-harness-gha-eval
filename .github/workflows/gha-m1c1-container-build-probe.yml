@@ -1,0 +1,58 @@
+name: M1C.1 Container Build No-Model Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  container-build-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      ADAPTER_SOURCE_ROOT: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Initialize isolated probe runtime
+        run: mkdir -p reports work/candidate work/jobs work/runtime
+      - name: Install exact Harbor and qualify adapter registration
+        run: |
+          set -euo pipefail
+          pipx install harbor==0.21.0
+          python3 scripts/resolve_harbor_python.py --expected-version 0.21.0 --json > reports/harbor-resolution.json
+          HARBOR_PY="$(python3 -c 'import json; print(json.load(open("reports/harbor-resolution.json"))["interpreter"])')"
+          printf 'HARBOR_PY=%s\n' "$HARBOR_PY" >> "$GITHUB_ENV"
+          env -u PYTHONPATH python3 scripts/m1c_adapter_pth.py --harbor-python "$HARBOR_PY" --source-root "$ADAPTER_SOURCE_ROOT" --workspace "$GITHUB_WORKSPACE" --output reports/adapter-pth-qualification.json
+          PYTHONPATH="$ADAPTER_SOURCE_ROOT" "$HARBOR_PY" scripts/gha_tb21_resolve_m1c1.py
+          PYTHONPATH="$ADAPTER_SOURCE_ROOT" "$HARBOR_PY" -c 'from pathlib import Path; from evaluation.agents.dsh_harbor_adapter.materializer import materialize,create_run; materialize(Path("harnesses/adapter_smoke_h0/harness.json"),Path("work/candidate")); create_run(Path("work"),"runtime")'
+      - name: Execute production-equivalent install-only probe
+        id: probe
+        continue-on-error: true
+        run: PYTHONPATH="$ADAPTER_SOURCE_ROOT" "$HARBOR_PY" scripts/gha_m1c1_container_build_probe.py
+      - name: Prepare and scan diagnostics
+        id: artifacts
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/gha_m1c1_container_build_probe.py stage
+          python3 scripts/public_secret_scan.py --artifact-mode container-build-artifact-stage > reports/container-build-secret-scan.txt
+          cp reports/container-build-secret-scan.txt container-build-artifact-stage/secret-scan.txt
+          find container-build-artifact-stage -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > container-build-artifact-stage/SHA256SUMS
+          echo 'safe=true' >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.artifacts.outputs.safe == 'true'
+        with:
+          name: m1c1-container-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: container-build-artifact-stage/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Enforce probe qualification
+        if: always()
+        run: |
+          test "${{ steps.probe.outcome }}" = success
+          python3 -c 'import json; d=json.load(open("reports/container-build-probe-summary.json")); assert d["success"] and d["provider_request_status"]=="PROVEN_ZERO" and not d["adapter_run_invoked"]'
