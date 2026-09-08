@@ -12,7 +12,7 @@ import unittest
 ROOT = Path(__file__).parents[2]
 CONTROLLER = ROOT / "scripts/gha_m1c1_live_controller.py"
 PROFILE = ROOT / "configs/model_profile_deepseek_v4_pro_v1.yaml"
-SELECTION = ROOT / "configs/m1c_integration_task_v2.json"
+SELECTION = ROOT / "configs/m1c_integration_task_v3.json"
 EXCLUSIONS = ROOT / "configs/experiment_task_exclusions_v1.json"
 DSH_COMMIT = "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e"
 
@@ -30,10 +30,8 @@ class InvocationEdgeTests(unittest.TestCase):
         candidate = root / "work/candidate/adapter_smoke_h0"
         candidate.mkdir(parents=True)
         shutil.copy2(PROFILE, root / "configs/model_profile_deepseek_v4_pro_v1.yaml")
-        shutil.copy2(SELECTION, root / "configs/m1c_integration_task_v2.json")
-        historical = subprocess.check_output(
-            ["git", "-C", str(ROOT), "show", "HEAD:configs/experiment_task_exclusions_v1.json"])
-        (root / "configs/experiment_task_exclusions_v1.json").write_bytes(historical)
+        shutil.copy2(SELECTION, root / "configs/m1c_integration_task_v3.json")
+        shutil.copy2(EXCLUSIONS, root / "configs/experiment_task_exclusions_v1.json")
         shutil.copytree(ROOT / "evaluation/agents/dsh_harbor_adapter", root / "evaluation/agents/dsh_harbor_adapter")
         (candidate / "manifest.json").write_text('{"candidate_id":"adapter_smoke_h0"}\n')
         (candidate / "candidate.cordis.patch.yml").write_text("plugins: []\n")

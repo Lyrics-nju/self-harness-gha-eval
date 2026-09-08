@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 
@@ -23,7 +24,10 @@ class LiveWorkflowTests(unittest.TestCase):
     def test_03_standard_runner(self): self.assertIn("runs-on: ubuntu-24.04", self.workflow)
     def test_04_no_matrix(self): self.assertNotIn("matrix:", self.workflow)
     def test_05_no_retry_logic(self): self.assertNotIn("retry", self.workflow.lower()); self.assertIn('"--max-retries", "0"', self.controller)
-    def test_06_exact_fixed_task(self): self.assertEqual(controller.TASK_ID, "terminal-bench/chess-best-move"); self.assertEqual(self.controller.count('TASK_ID = "terminal-bench/chess-best-move"'), 1)
+    def test_06_exact_fixed_task(self):
+        record=json.loads((ROOT/"configs/m1c_integration_task_v3.json").read_text())
+        self.assertEqual(controller.TASK_ID, record["selected_task_id"])
+        self.assertIn("configs/m1c_integration_task_v3.json", self.controller)
     def test_07_one_harbor_trial_path(self): self.assertEqual(self.controller.count('subprocess.run(harbor_command(root)'), 1)
     def test_08_no_arbitrary_task_input(self): self.assertNotIn("inputs:", self.workflow); self.assertNotIn("--task", self.controller)
     def test_09_required_secret_name_referenced(self): self.assertIn("secrets." + "DEEPSEEK_" + "API_KEY", self.workflow)

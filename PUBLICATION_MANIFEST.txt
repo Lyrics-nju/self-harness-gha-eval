@@ -89,6 +89,7 @@ evaluation/tests/test_m1c_postlive_workflow.py
 reports/m1c_live_run_34042734063_forensic_audit.md
 scripts/m1c_postlive_observability.py
 configs/m1c_integration_task_v2.json
+configs/m1c_integration_task_v3.json
 evaluation/tests/test_m1c_integration_task_binding.py
 evaluation/tests/test_public_secret_scan_structured.py
 evaluation/tests/test_m1c_evidence_safety.py

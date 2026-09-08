@@ -8,7 +8,8 @@ from harbor.registry.client.package import PackageDatasetClient
 
 SLUG = "terminal-bench/terminal-bench-2-1"
 DIGEST = "7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a"
-TASK = "terminal-bench/chess-best-move"
+SELECTION_RECORD = Path(__file__).parents[1] / "configs/m1c_integration_task_v3.json"
+TASK = json.loads(SELECTION_RECORD.read_text())["selected_task_id"]
 
 async def main() -> None:
     if resolve_api_key() is not None:

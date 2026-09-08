@@ -21,7 +21,8 @@ except ModuleNotFoundError:  # importlib-based repository tests
         build_partial_manifest, build_safe_core, capture_raw, discover_trial, parse_result, provider_evidence, write_json,
     )
 
-TASK_ID = "terminal-bench/chess-best-move"
+SELECTION_RECORD = Path(__file__).parents[1] / "configs/m1c_integration_task_v3.json"
+TASK_ID = json.loads(SELECTION_RECORD.read_text())["selected_task_id"]
 DATASET = "terminal-bench/terminal-bench-2-1@sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a"
 DSH_COMMIT = "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e"
 PROFILE_SHA256 = "2102539e0c35c4168f2c91b2383f95e39042576a64612060e55a126a57bf7f4e"
@@ -105,7 +106,7 @@ def harbor_command(root: Path) -> list[str]:
 
 def preflight(root: Path) -> int:
     profile = root / "configs/model_profile_deepseek_v4_pro_v1.yaml"
-    selection = json.loads((root / "configs/m1c_integration_task_v2.json").read_text())
+    selection = json.loads((root / "configs/m1c_integration_task_v3.json").read_text())
     exclusions_path = root / "configs/experiment_task_exclusions_v1.json"
     exclusions = json.loads(exclusions_path.read_text())
     eligible = selection.get("eligible_task_ids", [])
@@ -125,7 +126,7 @@ def preflight(root: Path) -> int:
         "dsh_clean": not subprocess.run(["git", "-C", str(dsh), "status", "--porcelain", "--untracked-files=no"], text=True, capture_output=True).stdout.strip(),
         "profile_sha": True,
         "selection_task": selection.get("selected_task_id") == TASK_ID,
-        "selection_count": selection.get("eligible_count") == 23 == len(eligible),
+        "selection_count": selection.get("eligible_count") == 22 == len(eligible),
         "selection_order": eligible == sorted(eligible, key=lambda value: value.encode("utf-8")),
         "selection_order_sha": selection.get("eligible_order_sha256") == eligible_hash,
         "selection_exclusion_sha": selection.get("exclusion_config_sha") == sha256(exclusions_path),
