@@ -19,6 +19,31 @@ from scripts.m1c_postlive_observability import build_partial_manifest, capture_r
 JOB_NAME = "m1c1-container-build-probe"
 
 
+def optional_command_metadata(command: list[str], runner=None) -> dict[str, object]:
+    """Capture host diagnostics without turning them into production dependencies."""
+    runner = runner or subprocess.run
+    try:
+        completed = runner(command, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return {"status": "ABSENT", "value": "NOT_AVAILABLE"}
+    except OSError as exc:
+        return {"status": "ERROR", "value": "NOT_AVAILABLE", "error_type": type(exc).__name__}
+    value = completed.stdout.strip()
+    if completed.returncode != 0:
+        return {"status": "ERROR", "value": "NOT_AVAILABLE", "exit_code": completed.returncode}
+    return {"status": "PRESENT", "value": value or "NOT_AVAILABLE"}
+
+
+def optional_file_metadata(path: Path) -> dict[str, object]:
+    """Capture optional runner filesystem metadata with an explicit status."""
+    try:
+        return {"status": "PRESENT", "value": path.read_text().strip() or "NOT_AVAILABLE"}
+    except FileNotFoundError:
+        return {"status": "ABSENT", "value": "NOT_AVAILABLE"}
+    except OSError as exc:
+        return {"status": "ERROR", "value": "NOT_AVAILABLE", "error_type": type(exc).__name__}
+
+
 def probe(root: Path) -> int:
     for marker in ("MODEL_EXPOSURE_START", "PROVIDER_PATH_REACHED", "PROVIDER_REQUEST_START"):
         if (root / "reports" / marker).exists():
@@ -35,8 +60,15 @@ def probe(root: Path) -> int:
         "harbor_command": command, "install_only": True, "adapter_run_guard": "HARBOR_INSTALL_ONLY",
         "provider_request_status": "PROVEN_ZERO", "provider_path_reached": False,
         "node_options_state": "UNSET" if not environment.get("NODE_OPTIONS") else "SET_VALUE_NOT_RECORDED",
-        "runner_node": subprocess.run(["node", "--version"], capture_output=True, text=True).stdout.strip(),
-        "runner_pnpm": subprocess.run(["pnpm", "--version"], capture_output=True, text=True).stdout.strip(),
+        "runner_node": optional_command_metadata(["node", "--version"]),
+        "runner_pnpm": optional_command_metadata(["pnpm", "--version"]),
+        "runner_cgroup_memory_max": optional_file_metadata(Path("/sys/fs/cgroup/memory.max")),
+        "metadata_classification": {
+            "runner_node": "OPTIONAL_DIAGNOSTIC_METADATA",
+            "runner_pnpm": "OPTIONAL_DIAGNOSTIC_METADATA",
+            "runner_cgroup_memory_max": "OPTIONAL_DIAGNOSTIC_METADATA",
+            "harbor_install_only_command": "REQUIRED_FOR_PROBE_EXECUTION",
+        },
     }
     write_json(root / "reports/container-build-probe-metadata.json", metadata)
     stdout, stderr = root / "work/runtime/container-build-stdout.txt", root / "work/runtime/container-build-stderr.txt"

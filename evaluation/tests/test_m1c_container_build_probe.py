@@ -1,15 +1,24 @@
 import json
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock
 import yaml
+
+from scripts.gha_m1c1_container_build_probe import optional_command_metadata, optional_file_metadata
 
 ROOT = Path(__file__).parents[2]
 WORKFLOW = ROOT / ".github/workflows/gha-m1c1-container-build-probe.yml"
 SCRIPT = ROOT / "scripts/gha_m1c1_container_build_probe.py"
+MATERIALIZER_SPEC = importlib.util.spec_from_file_location(
+    "m1c_probe_materializer", ROOT / "evaluation/agents/dsh_harbor_adapter/materializer.py"
+)
+MATERIALIZER = importlib.util.module_from_spec(MATERIALIZER_SPEC)
+MATERIALIZER_SPEC.loader.exec_module(MATERIALIZER)
 
 
 class ContainerBuildProbeTests(unittest.TestCase):
@@ -50,17 +59,15 @@ class ContainerBuildProbeTests(unittest.TestCase):
         self.assertNotIn("matrix:", self.workflow)
 
     def test_08_materializer_owns_runtime_creation(self):
-        from evaluation.agents.dsh_harbor_adapter.materializer import create_run
         with tempfile.TemporaryDirectory() as directory:
             work=Path(directory)/"work"; work.mkdir()
             runtime=work/"runtime"; self.assertFalse(runtime.exists())
-            create_run(work,"runtime"); self.assertTrue(runtime.is_dir())
+            MATERIALIZER.create_run(work,"runtime"); self.assertTrue(runtime.is_dir())
 
     def test_09_precreated_runtime_reproduces_collision(self):
-        from evaluation.agents.dsh_harbor_adapter.materializer import create_run
         with tempfile.TemporaryDirectory() as directory:
             work=Path(directory)/"work"; (work/"runtime").mkdir(parents=True)
-            with self.assertRaises(FileExistsError): create_run(work,"runtime")
+            with self.assertRaises(FileExistsError): MATERIALIZER.create_run(work,"runtime")
 
     def test_10_workflow_leaves_runtime_absent(self):
         init=self.workflow.split("Initialize isolated probe runtime",1)[1].split("- name:",1)[0]
@@ -97,6 +104,57 @@ class ContainerBuildProbeTests(unittest.TestCase):
         self.assertIn("set -euo pipefail",block)
         self.assertIn("public_secret_scan.py --artifact-mode",block)
         self.assertIn("sha256sum > container-build-artifact-stage/SHA256SUMS",block)
+
+    def test_16_host_pnpm_absent_is_explicit_and_non_throwing(self):
+        def absent(*args, **kwargs): raise FileNotFoundError("pnpm")
+        self.assertEqual(optional_command_metadata(["pnpm", "--version"], absent),
+                         {"status":"ABSENT", "value":"NOT_AVAILABLE"})
+
+    def test_17_host_pnpm_present_version_is_recorded(self):
+        runner=Mock(return_value=subprocess.CompletedProcess([],0,"10.15.1\n",""))
+        self.assertEqual(optional_command_metadata(["pnpm", "--version"],runner),
+                         {"status":"PRESENT", "value":"10.15.1"})
+
+    def test_18_optional_command_error_is_not_success(self):
+        runner=Mock(return_value=subprocess.CompletedProcess([],7,"","diagnostic failed"))
+        self.assertEqual(optional_command_metadata(["pnpm", "--version"],runner),
+                         {"status":"ERROR", "value":"NOT_AVAILABLE", "exit_code":7})
+
+    def test_19_node_metadata_is_optional_and_stateful(self):
+        self.assertIn('"runner_node": optional_command_metadata(["node", "--version"])',self.script)
+        self.assertIn('"runner_node": "OPTIONAL_DIAGNOSTIC_METADATA"',self.script)
+
+    def test_20_cgroup_absence_is_non_throwing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(optional_file_metadata(Path(directory)/"missing"),
+                             {"status":"ABSENT", "value":"NOT_AVAILABLE"})
+
+    def test_21_cgroup_read_error_is_explicit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(optional_file_metadata(Path(directory)),
+                             {"status":"ERROR", "value":"NOT_AVAILABLE", "error_type":"IsADirectoryError"})
+
+    def test_22_required_harbor_command_remains_fail_closed(self):
+        self.assertIn("process = subprocess.run(command",self.script)
+        self.assertNotIn("except Exception",self.script.split("process = subprocess.run(command",1)[1].split("capture_raw",1)[0])
+        self.assertIn('"harbor_install_only_command": "REQUIRED_FOR_PROBE_EXECUTION"',self.script)
+
+    def test_23_optional_metadata_precedes_required_probe(self):
+        self.assertLess(self.script.index('"runner_pnpm": optional_command_metadata'),
+                        self.script.index("process = subprocess.run(command"))
+        self.assertIn('live.harbor_command(root) + ["--install-only"]',self.script)
+
+    def test_24_metadata_failure_artifacts_and_absence_survive(self):
+        self.test_06_failure_evidence_always_uploaded()
+        self.test_12_pre_harbor_missing_evidence_is_explicit()
+
+    def test_25_boundaries_and_binding_remain_frozen(self):
+        self.assertIn('"adapter_run_invoked": False',self.script)
+        self.assertIn('"provider_path_reached": False',self.script)
+        self.assertIn('"verifier_invoked": False',self.script)
+        self.assertNotIn("inputs:",self.workflow)
+        self.assertNotIn("DEEPSEEK_"+"API_KEY",self.workflow)
+        self.assertIn("configs/m1c_integration_task_v3.json",(ROOT/"scripts/gha_m1c1_live_controller.py").read_text())
 
 
 if __name__ == "__main__": unittest.main()
