@@ -9,6 +9,10 @@ import sys
 import time
 from pathlib import Path
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
 from scripts import gha_m1c1_live_controller as live
 from scripts.m1c_postlive_observability import build_partial_manifest, capture_raw, discover_trial, write_json
 

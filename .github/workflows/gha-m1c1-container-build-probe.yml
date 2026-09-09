@@ -19,7 +19,9 @@ jobs:
         with:
           node-version: '24'
       - name: Initialize isolated probe runtime
-        run: mkdir -p reports work/candidate work/jobs work/runtime
+        run: |
+          mkdir -p reports work/candidate work/jobs
+          test ! -e work/runtime
       - name: Install exact Harbor and qualify adapter registration
         run: |
           set -euo pipefail
@@ -39,7 +41,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 scripts/gha_m1c1_container_build_probe.py stage
+          env -u PYTHONPATH python3 "$GITHUB_WORKSPACE/scripts/gha_m1c1_container_build_probe.py" stage
           python3 scripts/public_secret_scan.py --artifact-mode container-build-artifact-stage > reports/container-build-secret-scan.txt
           cp reports/container-build-secret-scan.txt container-build-artifact-stage/secret-scan.txt
           find container-build-artifact-stage -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > container-build-artifact-stage/SHA256SUMS
