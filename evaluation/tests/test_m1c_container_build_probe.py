@@ -11,8 +11,9 @@ import yaml
 
 from scripts import gha_m1c1_container_build_probe as probe_module
 from scripts.gha_m1c1_container_build_probe import (
-    authoritative_job_name, discover_intended_trial, optional_command_metadata, optional_file_metadata,
+    authoritative_job_name, bind_forensic_agent, discover_intended_trial, optional_command_metadata, optional_file_metadata,
 )
+from evaluation.agents.dsh_harbor_adapter.build_forensics_probe import forensic_wrapper
 
 ROOT = Path(__file__).parents[2]
 WORKFLOW = ROOT / ".github/workflows/gha-m1c1-container-build-probe.yml"
@@ -38,7 +39,7 @@ class ContainerBuildProbeTests(unittest.TestCase):
             self.assertNotIn(token, self.workflow)
 
     def test_03_exact_production_install_only_path(self):
-        self.assertIn("live.harbor_command(root) + [\"--install-only\"]", self.script)
+        self.assertIn("bind_forensic_agent(live.harbor_command(root)) + [\"--install-only\"]", self.script)
         self.assertIn("evaluation.agents.dsh_harbor_adapter", (ROOT/"scripts/gha_m1c1_live_controller.py").read_text())
 
     def test_04_authoritative_v3_binding(self):
@@ -145,7 +146,7 @@ class ContainerBuildProbeTests(unittest.TestCase):
     def test_23_optional_metadata_precedes_required_probe(self):
         self.assertLess(self.script.index('"runner_pnpm": optional_command_metadata'),
                         self.script.index("process = subprocess.run(command"))
-        self.assertIn('live.harbor_command(root) + ["--install-only"]',self.script)
+        self.assertIn('bind_forensic_agent(live.harbor_command(root)) + ["--install-only"]',self.script)
 
     def test_24_metadata_failure_artifacts_and_absence_survive(self):
         self.test_06_failure_evidence_always_uploaded()
@@ -218,6 +219,60 @@ class ContainerBuildProbeTests(unittest.TestCase):
 
     def test_33_exit_zero_without_result_is_not_success(self):
         self.assertIn("process.returncode == 0 and result is not None",self.script)
+
+    def test_34_forensic_agent_binding_is_probe_only(self):
+        command=["harbor","run","--agent",probe_module.live.AGENT,"--yes"]
+        bound=bind_forensic_agent(command)
+        self.assertEqual(command[3],probe_module.live.AGENT)
+        self.assertEqual(bound[3],probe_module.FORENSIC_AGENT)
+
+    def test_35_full_log_and_nonzero_exit_survive(self):
+        payload="X" * 35000
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts=Path(directory)/"artifacts"
+            command=f"printf '%s' '{payload}'; printf '%s' 'stderr-marker' >&2; exit 37"
+            completed=subprocess.run(["bash","-c",forensic_wrapper(command,str(artifacts))])
+            self.assertEqual(completed.returncode,37)
+            self.assertEqual((artifacts/"full-build.stdout").read_text(),payload)
+            self.assertEqual((artifacts/"full-build.stderr").read_text(),"stderr-marker")
+            status=(artifacts/"exit-status.txt").read_text()
+            self.assertIn("shell_exit_status=37",status)
+            self.assertIn("child_command_exit_status=37",status)
+            self.assertIn("signal_evidence=NOT_AVAILABLE",status)
+
+    def test_36_optional_resource_metadata_absence_is_nonfatal(self):
+        wrapper=forensic_wrapper("exit 0","/tmp/m1c-forensic-test")
+        self.assertIn("NOT_AVAILABLE",wrapper)
+        self.assertIn("|| true",wrapper)
+
+    def test_37_full_log_is_in_harbor_artifact_lane(self):
+        source=(ROOT/"evaluation/agents/dsh_harbor_adapter/build_forensics_probe.py").read_text()
+        self.assertIn('/logs/artifacts/dsh-build-forensics',source)
+        self.assertIn('full-build.stdout',source)
+        self.assertIn('full-build.stderr',source)
+        self.assertIn('exit "$child_status"',source)
+
+    def test_38_production_install_is_inherited_unchanged(self):
+        from evaluation.agents.dsh_harbor_adapter.adapter import DshHarborAdapter
+        from evaluation.agents.dsh_harbor_adapter.build_forensics_probe import DshHarborBuildForensicsProbe
+        self.assertIs(DshHarborBuildForensicsProbe.install,DshHarborAdapter.install)
+
+    def test_39_forensic_boundaries_remain_no_model(self):
+        source=(ROOT/"evaluation/agents/dsh_harbor_adapter/build_forensics_probe.py").read_text()
+        self.assertNotIn("def run(",source)
+        self.assertNotIn("DEEPSEEK_"+"API_KEY",source)
+        self.assertIn('"provider_request_status": "PROVEN_ZERO"',self.script)
+
+    def test_40_checksum_stage_covers_nested_full_log(self):
+        block=self.workflow.split("Prepare and scan diagnostics",1)[1]
+        self.assertIn("find container-build-artifact-stage -type f",block)
+        self.assertIn('"raw-evidence"',self.script)
+
+    def test_41_only_exact_terminal_build_is_wrapped(self):
+        source=(ROOT/"evaluation/agents/dsh_harbor_adapter/build_forensics_probe.py").read_text()
+        self.assertIn('suffix = "pnpm run build"',source)
+        self.assertIn('command.endswith(suffix)',source)
+        self.assertIn('command[:-len(suffix)] + forensic_wrapper(suffix)',source)
 
 
 if __name__ == "__main__": unittest.main()

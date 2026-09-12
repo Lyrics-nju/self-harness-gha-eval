@@ -57,6 +57,7 @@ scripts/run_frozen_evaluator_regressions.py
 .github/workflows/gha-m1c1-no-model.yml
 evaluation/agents/dsh_harbor_adapter/__init__.py
 evaluation/agents/dsh_harbor_adapter/adapter.py
+evaluation/agents/dsh_harbor_adapter/build_forensics_probe.py
 evaluation/agents/dsh_harbor_adapter/lifecycle.py
 evaluation/agents/dsh_harbor_adapter/materializer.py
 evaluation/tests/test_m1c_lifecycle.py

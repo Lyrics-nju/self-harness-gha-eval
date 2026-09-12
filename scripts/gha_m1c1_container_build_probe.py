@@ -16,6 +16,8 @@ if str(REPOSITORY_ROOT) not in sys.path:
 from scripts import gha_m1c1_live_controller as live
 from scripts.m1c_postlive_observability import build_partial_manifest, capture_raw, discover_trial, write_json
 
+FORENSIC_AGENT = "evaluation.agents.dsh_harbor_adapter.build_forensics_probe:DshHarborBuildForensicsProbe"
+
 
 def optional_command_metadata(command: list[str], runner=None) -> dict[str, object]:
     """Capture host diagnostics without turning them into production dependencies."""
@@ -49,6 +51,16 @@ def authoritative_job_name(command: list[str]) -> str:
     return live.JOB_NAME
 
 
+def bind_forensic_agent(command: list[str]) -> list[str]:
+    """Replace only the AgentFactory class used by this no-model probe."""
+    bound = list(command)
+    indexes = [index for index, item in enumerate(bound[:-1]) if item == "--agent"]
+    if len(indexes) != 1 or bound[indexes[0] + 1] != live.AGENT:
+        raise RuntimeError("M1C_CONTAINER_BUILD_AGENT_CONTRACT_MISMATCH")
+    bound[indexes[0] + 1] = FORENSIC_AGENT
+    return bound
+
+
 def discover_intended_trial(jobs_dir: Path, job_name: str, task_id: str) -> dict:
     discovery = discover_trial(jobs_dir, job_name)
     discovery.update(job_name=job_name, task_id=task_id)
@@ -70,7 +82,7 @@ def probe(root: Path) -> int:
     for marker in ("MODEL_EXPOSURE_START", "PROVIDER_PATH_REACHED", "PROVIDER_REQUEST_START"):
         if (root / "reports" / marker).exists():
             raise RuntimeError(f"forbidden marker present: {marker}")
-    command = live.harbor_command(root) + ["--install-only"]
+    command = bind_forensic_agent(live.harbor_command(root)) + ["--install-only"]
     job_name = authoritative_job_name(command)
     environment = live.harbor_environment(root)
     profile = (root / "configs/model_profile_deepseek_v4_pro_v1.yaml").read_text()
@@ -81,6 +93,7 @@ def probe(root: Path) -> int:
         "workflow_commit": os.environ.get("GITHUB_SHA", "NOT_AVAILABLE"),
         "dsh_commit": live.DSH_COMMIT, "harbor_version": live.HARBOR_VERSION,
         "harbor_command": command, "install_only": True, "adapter_run_guard": "HARBOR_INSTALL_ONLY",
+        "forensic_agent": FORENSIC_AGENT,
         "provider_request_status": "PROVEN_ZERO", "provider_path_reached": False,
         "node_options_state": "UNSET" if not environment.get("NODE_OPTIONS") else "SET_VALUE_NOT_RECORDED",
         "runner_node": optional_command_metadata(["node", "--version"]),
