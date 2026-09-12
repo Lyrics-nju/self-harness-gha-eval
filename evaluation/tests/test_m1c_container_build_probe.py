@@ -9,7 +9,10 @@ import unittest
 from unittest.mock import Mock
 import yaml
 
-from scripts.gha_m1c1_container_build_probe import optional_command_metadata, optional_file_metadata
+from scripts import gha_m1c1_container_build_probe as probe_module
+from scripts.gha_m1c1_container_build_probe import (
+    authoritative_job_name, discover_intended_trial, optional_command_metadata, optional_file_metadata,
+)
 
 ROOT = Path(__file__).parents[2]
 WORKFLOW = ROOT / ".github/workflows/gha-m1c1-container-build-probe.yml"
@@ -155,6 +158,66 @@ class ContainerBuildProbeTests(unittest.TestCase):
         self.assertNotIn("inputs:",self.workflow)
         self.assertNotIn("DEEPSEEK_"+"API_KEY",self.workflow)
         self.assertIn("configs/m1c_integration_task_v3.json",(ROOT/"scripts/gha_m1c1_live_controller.py").read_text())
+
+    def test_26_command_and_evidence_share_authoritative_job_name(self):
+        self.assertNotIn('JOB_NAME = "m1c1-container-build-probe"',self.script)
+        self.assertIn("job_name = authoritative_job_name(command)",self.script)
+        self.assertIn("capture_raw(root, job_name",self.script)
+        self.assertIn("discover_intended_trial(root / \"work/jobs\", job_name",self.script)
+
+    def test_27_command_contract_tracks_authoritative_value(self):
+        old=probe_module.live.JOB_NAME
+        try:
+            probe_module.live.JOB_NAME="changed-authoritative-job"
+            command=["harbor","run","--job-name","changed-authoritative-job","--yes"]
+            self.assertEqual(authoritative_job_name(command),"changed-authoritative-job")
+        finally: probe_module.live.JOB_NAME=old
+
+    def test_28_command_contract_rejects_missing_duplicate_or_divergent(self):
+        with self.assertRaises(RuntimeError): authoritative_job_name(["harbor","run"])
+        with self.assertRaises(RuntimeError): authoritative_job_name(["--job-name","wrong"])
+        with self.assertRaises(RuntimeError): authoritative_job_name(
+            ["--job-name",probe_module.live.JOB_NAME,"--job-name",probe_module.live.JOB_NAME])
+
+    def _trial(self,root,name,result=True):
+        trial=root/"jobs"/probe_module.live.JOB_NAME/name; trial.mkdir(parents=True)
+        (trial/"config.json").write_text("{}")
+        if result: (trial/"result.json").write_text("{}")
+        return trial
+
+    def test_29_exact_job_root_and_dynamic_suffix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); self._trial(root,"configure-git-webserver__Dynamic9")
+            found=discover_intended_trial(root/"jobs",probe_module.live.JOB_NAME,
+                                          "terminal-bench/configure-git-webserver")
+            self.assertEqual(found["status"],"PRESENT")
+            self.assertEqual(found["trial_id"],"configure-git-webserver__Dynamic9")
+
+    def test_30_zero_and_multiple_matches_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            absent=discover_intended_trial(root/"jobs",probe_module.live.JOB_NAME,
+                                           "terminal-bench/configure-git-webserver")
+            self.assertEqual(absent["blocker"],"M1C_HARBOR_TRIAL_NOT_FOUND")
+            self._trial(root,"configure-git-webserver__a")
+            self._trial(root,"configure-git-webserver__b")
+            ambiguous=discover_intended_trial(root/"jobs",probe_module.live.JOB_NAME,
+                                              "terminal-bench/configure-git-webserver")
+            self.assertEqual(ambiguous["blocker"],"M1C_HARBOR_TRIAL_AMBIGUOUS")
+
+    def test_31_single_wrong_task_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); self._trial(root,"other-task__Dynamic9")
+            found=discover_intended_trial(root/"jobs",probe_module.live.JOB_NAME,
+                                          "terminal-bench/configure-git-webserver")
+            self.assertEqual(found["blocker"],"M1C_HARBOR_TRIAL_TASK_MISMATCH")
+
+    def test_32_summary_and_manifest_record_authoritative_job_name(self):
+        self.assertIn('"job_name": job_name',self.script)
+        self.assertIn('manifest["job_name"] = live.JOB_NAME',self.script)
+
+    def test_33_exit_zero_without_result_is_not_success(self):
+        self.assertIn("process.returncode == 0 and result is not None",self.script)
 
 
 if __name__ == "__main__": unittest.main()
