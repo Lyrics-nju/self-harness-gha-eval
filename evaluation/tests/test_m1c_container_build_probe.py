@@ -39,7 +39,7 @@ class ContainerBuildProbeTests(unittest.TestCase):
             self.assertNotIn(token, self.workflow)
 
     def test_03_exact_production_install_only_path(self):
-        self.assertIn("bind_forensic_agent(live.harbor_command(root)) + [\"--install-only\"]", self.script)
+        self.assertIn("bind_forensic_agent(live.harbor_command(root), agent) + [\"--install-only\"]", self.script)
         self.assertIn("evaluation.agents.dsh_harbor_adapter", (ROOT/"scripts/gha_m1c1_live_controller.py").read_text())
 
     def test_04_authoritative_v3_binding(self):
@@ -146,7 +146,7 @@ class ContainerBuildProbeTests(unittest.TestCase):
     def test_23_optional_metadata_precedes_required_probe(self):
         self.assertLess(self.script.index('"runner_pnpm": optional_command_metadata'),
                         self.script.index("process = subprocess.run(command"))
-        self.assertIn('bind_forensic_agent(live.harbor_command(root)) + ["--install-only"]',self.script)
+        self.assertIn('bind_forensic_agent(live.harbor_command(root), agent) + ["--install-only"]',self.script)
 
     def test_24_metadata_failure_artifacts_and_absence_survive(self):
         self.test_06_failure_evidence_always_uploaded()

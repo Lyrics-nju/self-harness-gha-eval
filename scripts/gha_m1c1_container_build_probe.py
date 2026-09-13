@@ -17,6 +17,7 @@ from scripts import gha_m1c1_live_controller as live
 from scripts.m1c_postlive_observability import build_partial_manifest, capture_raw, discover_trial, write_json
 
 FORENSIC_AGENT = "evaluation.agents.dsh_harbor_adapter.build_forensics_probe:DshHarborBuildForensicsProbe"
+SUBSTAGE_FORENSIC_AGENT = "evaluation.agents.dsh_harbor_adapter.build_forensics_probe:DshHarborBuildSubstageForensicsProbe"
 
 
 def optional_command_metadata(command: list[str], runner=None) -> dict[str, object]:
@@ -51,13 +52,13 @@ def authoritative_job_name(command: list[str]) -> str:
     return live.JOB_NAME
 
 
-def bind_forensic_agent(command: list[str]) -> list[str]:
+def bind_forensic_agent(command: list[str], agent: str = FORENSIC_AGENT) -> list[str]:
     """Replace only the AgentFactory class used by this no-model probe."""
     bound = list(command)
     indexes = [index for index, item in enumerate(bound[:-1]) if item == "--agent"]
     if len(indexes) != 1 or bound[indexes[0] + 1] != live.AGENT:
         raise RuntimeError("M1C_CONTAINER_BUILD_AGENT_CONTRACT_MISMATCH")
-    bound[indexes[0] + 1] = FORENSIC_AGENT
+    bound[indexes[0] + 1] = agent
     return bound
 
 
@@ -78,11 +79,26 @@ def discover_intended_trial(jobs_dir: Path, job_name: str, task_id: str) -> dict
     return discovery
 
 
-def probe(root: Path) -> int:
+def read_substage_evidence(discovery: dict) -> dict | None:
+    trial_dir = discovery.get("trial_dir")
+    if not trial_dir:
+        return None
+    path = Path(trial_dir) / "artifacts/logs/artifacts/dsh-build-substage-forensics/substage-summary.txt"
+    if not path.is_file():
+        return None
+    values = {}
+    for line in path.read_text().splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1); values[key] = value
+    return values
+
+
+def probe(root: Path, substage: bool = False) -> int:
     for marker in ("MODEL_EXPOSURE_START", "PROVIDER_PATH_REACHED", "PROVIDER_REQUEST_START"):
         if (root / "reports" / marker).exists():
             raise RuntimeError(f"forbidden marker present: {marker}")
-    command = bind_forensic_agent(live.harbor_command(root)) + ["--install-only"]
+    agent = SUBSTAGE_FORENSIC_AGENT if substage else FORENSIC_AGENT
+    command = bind_forensic_agent(live.harbor_command(root), agent) + ["--install-only"]
     job_name = authoritative_job_name(command)
     environment = live.harbor_environment(root)
     profile = (root / "configs/model_profile_deepseek_v4_pro_v1.yaml").read_text()
@@ -93,7 +109,7 @@ def probe(root: Path) -> int:
         "workflow_commit": os.environ.get("GITHUB_SHA", "NOT_AVAILABLE"),
         "dsh_commit": live.DSH_COMMIT, "harbor_version": live.HARBOR_VERSION,
         "harbor_command": command, "install_only": True, "adapter_run_guard": "HARBOR_INSTALL_ONLY",
-        "forensic_agent": FORENSIC_AGENT,
+        "forensic_agent": agent, "substage_forensics": substage,
         "provider_request_status": "PROVEN_ZERO", "provider_path_reached": False,
         "node_options_state": "UNSET" if not environment.get("NODE_OPTIONS") else "SET_VALUE_NOT_RECORDED",
         "runner_node": optional_command_metadata(["node", "--version"]),
@@ -119,9 +135,13 @@ def probe(root: Path) -> int:
         except (OSError, ValueError): pass
     exception = (result or {}).get("exception_info")
     install_only = bool(((result or {}).get("config") or {}).get("install_only"))
-    success = process.returncode == 0 and result is not None and exception is None and install_only
+    substage_evidence = read_substage_evidence(discovery) if substage else None
+    diagnostic_complete = bool(substage_evidence and substage_evidence.get("diagnostic_complete") == "true")
+    success = (process.returncode == 0 and result is not None and install_only and
+               (diagnostic_complete if substage else exception is None))
     summary = {
-        "classification": "M1C_GHA_CONTAINER_BUILD_QUALIFIED" if success else "M1C_CONTAINER_BUILD_PROBE_FAILED",
+        "classification": (substage_evidence or {}).get("classification") if diagnostic_complete else
+                          ("M1C_GHA_CONTAINER_BUILD_QUALIFIED" if success else "M1C_CONTAINER_BUILD_PROBE_FAILED"),
         "success": success, "task_id": live.TASK_ID, "job_name": job_name,
         "harbor_process_exit": process.returncode,
         "wall_seconds": round(time.monotonic() - start, 3), "result_discovery": discovery,
@@ -129,6 +149,8 @@ def probe(root: Path) -> int:
         "install_only": install_only, "adapter_run_invoked": False, "dsh_live_sessions": 0,
         "provider_path_reached": False, "provider_request_status": "PROVEN_ZERO", "provider_request_count": 0,
         "verifier_invoked": False,
+        "substage_forensics": substage, "diagnostic_complete": diagnostic_complete,
+        "substage_evidence": substage_evidence,
     }
     write_json(root / "reports/container-build-probe-summary.json", summary)
     write_json(root / "reports/container-build-process.json", {"exit_code": process.returncode, "wall_seconds": summary["wall_seconds"]})
@@ -148,4 +170,5 @@ def stage(root: Path) -> int:
 
 if __name__ == "__main__":
     root = Path.cwd().resolve()
-    raise SystemExit(stage(root) if len(sys.argv) > 1 and sys.argv[1] == "stage" else probe(root))
+    raise SystemExit(stage(root) if len(sys.argv) > 1 and sys.argv[1] == "stage" else
+                     probe(root, substage=len(sys.argv) > 1 and sys.argv[1] == "substage"))
