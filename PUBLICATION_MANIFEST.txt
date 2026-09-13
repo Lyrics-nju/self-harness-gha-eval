@@ -94,6 +94,7 @@ configs/m1c_integration_task_v3.json
 .github/workflows/gha-m1c1-container-build-probe.yml
 scripts/gha_m1c1_container_build_probe.py
 evaluation/tests/test_m1c_container_build_probe.py
+evaluation/tests/test_m1c_heap_correction.py
 evaluation/tests/test_m1c_integration_task_binding.py
 evaluation/tests/test_public_secret_scan_structured.py
 evaluation/tests/test_m1c_evidence_safety.py

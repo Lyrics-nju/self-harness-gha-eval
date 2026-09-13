@@ -13,6 +13,10 @@ class DshHarborAdapter(BaseInstalledAgent):
     SUPPORTS_CONFIG=True
     DSH_COMMIT="b150a551b8d465e31e418e1b2eaf5e79bbb7d28e"
     REMOTE=PurePosixPath("/installed-agent/deepseek-harness")
+    BUILD_NODE_OPTIONS="--max-old-space-size=1280"
+    BUILD_COMMAND=("if test \"${NODE_OPTIONS+x}\" = x; then "
+                   "echo M1C_DSH_BUILD_NODE_OPTIONS_DRIFT >&2; exit 78; fi; "
+                   f"NODE_OPTIONS={BUILD_NODE_OPTIONS} pnpm run build")
     @staticmethod
     def name(): return "dsh-harbor-adapter-v1"
     def get_version_command(self): return f"node {self.REMOTE}/apps/cli/lib/bin.js --version"
@@ -22,7 +26,7 @@ class DshHarborAdapter(BaseInstalledAgent):
              "node -e 'const [a,b]=process.versions.node.split(`.`).map(Number);process.exit(a>22||(a===22&&b>=19)?0:1)' || "
              "{ curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && apt-get install -y nodejs; }; "
              f"rm -rf {self.REMOTE}; git clone --filter=blob:none https://github.com/deepseek-ai/deepseek-harness.git {self.REMOTE}; "
-             f"git -C {self.REMOTE} checkout --detach {self.DSH_COMMIT}; corepack enable; cd {self.REMOTE}; pnpm install --frozen-lockfile; pnpm run build")
+             f"git -C {self.REMOTE} checkout --detach {self.DSH_COMMIT}; corepack enable; cd {self.REMOTE}; pnpm install --frozen-lockfile; {self.BUILD_COMMAND}")
         await self.exec_as_root(environment,command=cmd,timeout_sec=1800)
     @override
     @with_prompt_template

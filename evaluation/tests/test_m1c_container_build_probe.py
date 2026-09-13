@@ -270,7 +270,7 @@ class ContainerBuildProbeTests(unittest.TestCase):
 
     def test_41_only_exact_terminal_build_is_wrapped(self):
         source=(ROOT/"evaluation/agents/dsh_harbor_adapter/build_forensics_probe.py").read_text()
-        self.assertIn('suffix = "pnpm run build"',source)
+        self.assertIn('suffix = self.BUILD_COMMAND',source)
         self.assertIn('command.endswith(suffix)',source)
         self.assertIn('command[:-len(suffix)] + forensic_wrapper(suffix)',source)
 

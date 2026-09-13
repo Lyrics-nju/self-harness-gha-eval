@@ -69,7 +69,7 @@ class AdapterPthTests(unittest.TestCase):
         with self.assertRaises(wiring.WiringError): wiring.validate_source_root("C:\\repo", ROOT)
 
     def test_10_adapter_hash_unchanged(self):
-        self.assertEqual(hashlib.sha256(ADAPTER.read_bytes()).hexdigest(), "3086ed0919d182719195c8ee415bb89da2a035c2f2a923861efd09eb1c2e9d7c")
+        self.assertEqual(hashlib.sha256(ADAPTER.read_bytes()).hexdigest(), "8ef6389565309ba208557923cced1e619a8a1b25549353f9b5f13e2313ad6070")
 
     def test_11_probe_dispatch_only_and_no_matrix(self):
         text = PROBE.read_text(); trigger = text.split("permissions:", 1)[0]

@@ -14,6 +14,7 @@ def forensic_wrapper(command: str, artifact_dir: str = ARTIFACT_DIR) -> str:
     payload = shlex.quote(command)
     remote = shlex.quote(str(DshHarborAdapter.REMOTE))
     package_json = shlex.quote(str(DshHarborAdapter.REMOTE / "package.json"))
+    heap_options = shlex.quote(DshHarborAdapter.BUILD_NODE_OPTIONS)
     return f"""set +e
 forensic_dir={directory}
 mkdir -p "$forensic_dir"
@@ -43,6 +44,7 @@ snapshot after
   printf 'dsh_commit='; git -C {remote} rev-parse HEAD 2>/dev/null || printf 'NOT_AVAILABLE\\n'
   package_manager=$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' {package_json} 2>/dev/null | head -n 1) || package_manager=''
   printf 'package_manager=%s\\n' "${{package_manager:-NOT_AVAILABLE}}"
+  printf 'effective_heap_size_limit_bytes='; env NODE_OPTIONS={heap_options} node -e 'console.log(require("v8").getHeapStatistics().heap_size_limit)' 2>/dev/null || printf 'NOT_AVAILABLE\\n'
   printf 'kernel='; uname -a 2>/dev/null || printf 'NOT_AVAILABLE\\n'
   printf 'architecture='; uname -m 2>/dev/null || printf 'NOT_AVAILABLE\\n'
   printf 'libc_begin\\n'; ldd --version 2>&1 || printf 'NOT_AVAILABLE\\n'; printf 'libc_end\\n'
@@ -55,8 +57,8 @@ class DshHarborBuildForensicsProbe(DshHarborAdapter):
     """Keep production install inherited; observe only its build-bearing exec."""
 
     async def exec_as_root(self, environment, command, env=None, cwd=None, timeout_sec=None):
-        suffix = "pnpm run build"
-        if "pnpm install --frozen-lockfile; pnpm run build" in command and command.endswith(suffix):
+        suffix = self.BUILD_COMMAND
+        if "pnpm install --frozen-lockfile; " + suffix in command and command.endswith(suffix):
             # Keep the preceding production install chain byte-for-byte and
             # observationally wrap only its exact final build command.
             command = command[:-len(suffix)] + forensic_wrapper(suffix)

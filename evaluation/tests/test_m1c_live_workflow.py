@@ -47,7 +47,7 @@ class LiveWorkflowTests(unittest.TestCase):
         self.assertIn("id: safe_core\n        if: always()", self.workflow)
     def test_18_scan_precedes_upload(self): self.assertLess(self.workflow.index("public_secret_scan.py --artifact-mode"), self.workflow.index("actions/upload-artifact@v4"))
     def test_19_tests_do_not_call_model(self): self.assertNotIn("import " + "subprocess", Path(__file__).read_text())
-    def test_20_adapter_unchanged(self): self.assertEqual(hashlib.sha256(ADAPTER.read_bytes()).hexdigest(), "3086ed0919d182719195c8ee415bb89da2a035c2f2a923861efd09eb1c2e9d7c")
+    def test_20_adapter_unchanged(self): self.assertEqual(hashlib.sha256(ADAPTER.read_bytes()).hexdigest(), "8ef6389565309ba208557923cced1e619a8a1b25549353f9b5f13e2313ad6070")
 
     def test_controller_interpreter_contracts(self):
         for action in ("preflight", "run-live", "summarize"):

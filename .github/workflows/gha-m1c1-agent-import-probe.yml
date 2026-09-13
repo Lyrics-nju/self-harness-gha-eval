@@ -33,7 +33,7 @@ jobs:
             --workspace "$GITHUB_WORKSPACE" \
             --output reports/agent-import-probe.json
           sha256sum evaluation/agents/dsh_harbor_adapter/*.py > reports/adapter-source.sha256
-          test "$(sha256sum evaluation/agents/dsh_harbor_adapter/adapter.py | cut -d' ' -f1)" = 3086ed0919d182719195c8ee415bb89da2a035c2f2a923861efd09eb1c2e9d7c
+          test "$(sha256sum evaluation/agents/dsh_harbor_adapter/adapter.py | cut -d' ' -f1)" = 8ef6389565309ba208557923cced1e619a8a1b25549353f9b5f13e2313ad6070
       - name: Prepare sanitized artifacts
         id: artifacts
         if: always()
