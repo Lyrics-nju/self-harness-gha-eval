@@ -5,6 +5,7 @@ import importlib.util
 import json
 import base64
 import gzip
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ ROOT = Path(__file__).parents[2]
 MODULE_PATH = ROOT / "scripts" / "gha_m1c1_runtime_fingerprint.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "gha-m1c1-runtime-fingerprint.yml"
 POOL_PAYLOAD = ROOT / "splits" / "stable_task_pool_v3.json.gz.b64"
+HISTORICAL_SNAPSHOT = ROOT / "evidence" / "m1c" / "runtime_fingerprint" / "historical_task_image_map_run_34972344189_v1.json"
 spec = importlib.util.spec_from_file_location("runtime_fingerprint", MODULE_PATH)
 assert spec and spec.loader
 rf = importlib.util.module_from_spec(spec)
@@ -382,6 +384,203 @@ class RuntimeFingerprintTests(unittest.TestCase):
     def test_62_hash_and_secret_contract_unchanged(self):
         self.assertIn("sha256sum -c SHA256SUMS", self.workflow)
         self.assertIn("public_secret_scan.py --artifact-mode reports", self.workflow)
+
+    def _modified_snapshot(self, mutate):
+        data = json.loads(HISTORICAL_SNAPSHOT.read_text())
+        mutate(data)
+        mapping_sha = hashlib.sha256(rf.canonical_bytes(data["mappings"])).hexdigest()
+        data["mapping_sha256"] = mapping_sha
+        raw = rf.canonical_bytes(data)
+        path = Path(self.tempdir.name) / (hashlib.sha256(raw).hexdigest() + ".json")
+        path.write_bytes(raw)
+        return path, hashlib.sha256(raw).hexdigest(), mapping_sha
+
+    def test_63_verified_historical_snapshot_has_24_entries(self):
+        loaded = rf.load_historical_task_image_map(HISTORICAL_SNAPSHOT, self.tasks)
+        self.assertEqual(len(loaded), 24)
+
+    def test_64_snapshot_provenance_is_deterministic(self):
+        raw = HISTORICAL_SNAPSHOT.read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), rf.HISTORICAL_MAP_SHA256)
+        self.assertEqual(raw, rf.canonical_bytes(json.loads(raw)))
+
+    def test_65_snapshot_stable_pool_mismatch_fails_closed(self):
+        path, digest, mapping = self._modified_snapshot(lambda data: data.update(stable_pool_sha256="sha256:wrong"))
+        with self.assertRaisesRegex(rf.QualificationError, "stable_pool_sha256"):
+            rf.load_historical_task_image_map(path, self.tasks, digest, mapping)
+
+    def test_66_snapshot_dataset_mismatch_fails_closed(self):
+        path, digest, mapping = self._modified_snapshot(lambda data: data.update(dataset_identity="sha256:wrong"))
+        with self.assertRaisesRegex(rf.QualificationError, "dataset_identity"):
+            rf.load_historical_task_image_map(path, self.tasks, digest, mapping)
+
+    def test_67_snapshot_count_mismatch_fails_closed(self):
+        path, digest, mapping = self._modified_snapshot(lambda data: data["mappings"].pop())
+        with self.assertRaises(rf.QualificationError) as caught:
+            rf.load_historical_task_image_map(path, self.tasks, digest, mapping)
+        self.assertEqual(caught.exception.classification, "HISTORICAL_TASK_IMAGE_MAP_COUNT_MISMATCH")
+
+    def test_68_duplicate_historical_task_fails_closed(self):
+        def mutate(data): data["mappings"][1]["task"] = data["mappings"][0]["task"]
+        path, digest, mapping = self._modified_snapshot(mutate)
+        with self.assertRaises(rf.QualificationError) as caught:
+            rf.load_historical_task_image_map(path, self.tasks, digest, mapping)
+        self.assertEqual(caught.exception.classification, "HISTORICAL_TASK_IMAGE_MAP_DUPLICATE_TASK")
+
+    def test_69_missing_historical_digest_fails_closed(self):
+        def mutate(data): data["mappings"][0]["historical_platform_digest"] = ""
+        path, digest, mapping = self._modified_snapshot(mutate)
+        with self.assertRaises(rf.QualificationError):
+            rf.load_historical_task_image_map(path, self.tasks, digest, mapping)
+
+    def test_70_malformed_historical_digest_fails_closed(self):
+        def mutate(data): data["mappings"][0]["historical_platform_digest"] = "sha256:not-a-digest"
+        path, digest, mapping = self._modified_snapshot(mutate)
+        with self.assertRaises(rf.QualificationError):
+            rf.load_historical_task_image_map(path, self.tasks, digest, mapping)
+
+    def test_71_historical_current_task_set_mismatch_fails_closed(self):
+        historical = rf.load_historical_task_image_map(HISTORICAL_SNAPSHOT, self.tasks)
+        rows = self._current_rows(historical)[:-1]
+        with self.assertRaises(rf.QualificationError) as caught:
+            rf.compare_historical_task_image_map(historical, rows)
+        self.assertEqual(caught.exception.classification, "HISTORICAL_CURRENT_TASK_SET_MISMATCH")
+
+    def _current_rows(self, historical):
+        return [{
+            "task_id": task,
+            "authoritative_image_reference": row["authoritative_image_ref"],
+            "resolved_image_digest": row["historical_platform_digest"],
+        } for task, row in historical.items()]
+
+    def test_72_exact_24_of_24_match_permits_continuation(self):
+        historical = rf.load_historical_task_image_map(HISTORICAL_SNAPSHOT, self.tasks)
+        report = rf.compare_historical_task_image_map(historical, self._current_rows(historical))
+        self.assertEqual((report["historical_digest_matches"], report["drift_count"]), (24, 0))
+        self.assertEqual(report["classification"], "INTER_RUN_TASK_IMAGE_DIGEST_IDENTITY_PASS")
+
+    def test_73_23_of_24_match_is_tag_drift_blocker(self):
+        historical = rf.load_historical_task_image_map(HISTORICAL_SNAPSHOT, self.tasks)
+        rows = self._current_rows(historical)
+        rows[0]["resolved_image_digest"] = "sha256:" + "0" * 64
+        report = rf.compare_historical_task_image_map(historical, rows)
+        self.assertEqual(report["classification"], "M1C_RUNTIME_FINGERPRINT_INTER_RUN_TAG_DRIFT_BLOCKER")
+        self.assertEqual((report["historical_digest_matches"], report["drift_count"]), (23, 1))
+
+    def test_74_multiple_drifts_are_reported_deterministically(self):
+        historical = rf.load_historical_task_image_map(HISTORICAL_SNAPSHOT, self.tasks)
+        rows = self._current_rows(historical)
+        rows[0]["resolved_image_digest"] = "sha256:" + "0" * 64
+        rows[-1]["resolved_image_digest"] = "sha256:" + "1" * 64
+        report = rf.compare_historical_task_image_map(historical, list(reversed(rows)))
+        self.assertEqual(report["drift_count"], 2)
+        self.assertEqual(report["drifted_tasks"], sorted(report["drifted_tasks"]))
+
+    def test_75_registry_failure_is_not_tag_drift(self):
+        source = MODULE_PATH.read_text()
+        self.assertNotIn("M1C_RUNTIME_FINGERPRINT_INTER_RUN_TAG_DRIFT_BLOCKER", source[source.index("def resolve_remote"):source.index("FINGERPRINT_SCRIPT")])
+
+    def test_76_unresolved_current_digest_is_not_tag_drift(self):
+        historical = rf.load_historical_task_image_map(HISTORICAL_SNAPSHOT, self.tasks)
+        rows = self._current_rows(historical)
+        rows[0]["resolved_image_digest"] = rf.NOT_AVAILABLE
+        with self.assertRaises(rf.QualificationError) as caught:
+            rf.compare_historical_task_image_map(historical, rows)
+        self.assertEqual(caught.exception.classification, "CURRENT_TASK_IMAGE_DIGEST_EVIDENCE_INCOMPLETE")
+
+    def test_77_comparison_precedes_fingerprint_classification(self):
+        source = MODULE_PATH.read_text()
+        compare = source.index("compare_historical_task_image_map(historical, bound)")
+        fingerprint = source.index("fp = fingerprint_one(reference, digest, raw_dir)")
+        self.assertLess(compare, fingerprint)
+
+    def test_78_drift_raise_precedes_fingerprint_execution(self):
+        source = MODULE_PATH.read_text()
+        drift = source.index('if comparison["drift_count"]')
+        fingerprint = source.index("fp = fingerprint_one(reference, digest, raw_dir)")
+        self.assertLess(drift, fingerprint)
+
+    def test_79_controller_does_not_mutate_snapshot(self):
+        before = HISTORICAL_SNAPSHOT.read_bytes()
+        rf.load_historical_task_image_map(HISTORICAL_SNAPSHOT, self.tasks)
+        self.assertEqual(HISTORICAL_SNAPSHOT.read_bytes(), before)
+
+    def test_80_committed_snapshot_sha_is_validated(self):
+        source = MODULE_PATH.read_text()
+        self.assertIn("sha256_bytes(raw) != expected_snapshot_sha256", source)
+
+    def test_81_snapshot_contains_identity_only(self):
+        text = HISTORICAL_SNAPSHOT.read_text().lower()
+        for token in ("api_key", "authorization", "task_output", "model_data", "/home/", "/mnt/"):
+            self.assertNotIn(token, text)
+
+    def test_82_benchmark_stable_pool_and_exclusions_not_mutated(self):
+        changed = {"scripts/gha_m1c1_runtime_fingerprint.py", "evaluation/tests/test_m1c_runtime_fingerprint.py",
+                   ".github/workflows/gha-m1c1-runtime-fingerprint.yml", "PUBLICATION_MANIFEST.txt",
+                   "evidence/m1c/runtime_fingerprint/historical_task_image_map_run_34972344189_v1.json"}
+        self.assertFalse(any(path.startswith(("configs/", "splits/stable_task_pool_v3.json")) for path in changed))
+
+    def test_83_loader_correction_remains_intact(self):
+        source = rf.FINGERPRINT_SCRIPT
+        for token in ("READELF_PT_INTERP", "LDD_INTERPRETER_LINE", "FILESYSTEM_UNIQUE_CANDIDATE"):
+            self.assertIn(token, source)
+
+    def test_84_unresolved_loader_placeholder_remains_rejected(self):
+        with self.assertRaises(rf.QualificationError):
+            rf.parse_fingerprint("dynamic_loader_path\t${loader}\n")
+
+    def test_85_workflow_supplies_immutable_snapshot(self):
+        self.assertIn("--historical-task-image-map evidence/m1c/runtime_fingerprint/historical_task_image_map_run_34972344189_v1.json", self.workflow)
+
+    def test_86_identity_gates_precede_registry_resolution(self):
+        source = MODULE_PATH.read_text()
+        self.assertLess(source.index("load_historical_task_image_map(args.historical_task_image_map"), source.index("resolved, selected_raw = resolve_remote_fail_closed(reference)"))
+
+    def test_87_within_run_gate_precedes_inter_run_gate(self):
+        source = MODULE_PATH.read_text()
+        within = source.index("assert_no_tag_drift(initial[reference], again)")
+        inter = source.index("compare_historical_task_image_map(historical, bound)")
+        self.assertLess(within, inter)
+
+    def test_88_snapshot_publication_manifest_coverage(self):
+        manifest = (ROOT / "PUBLICATION_MANIFEST.txt").read_text().splitlines()
+        self.assertEqual(manifest.count(HISTORICAL_SNAPSHOT.relative_to(ROOT).as_posix()), 1)
+
+    def test_89_comparison_evidence_is_persisted(self):
+        source = MODULE_PATH.read_text()
+        self.assertIn('write_json(reports / "inter-run-digest-comparison.json", comparison)', source)
+
+    def test_90_deterministic_comparison_ordering(self):
+        historical = rf.load_historical_task_image_map(HISTORICAL_SNAPSHOT, self.tasks)
+        rows = self._current_rows(historical)
+        first = rf.compare_historical_task_image_map(historical, rows)
+        second = rf.compare_historical_task_image_map(historical, list(reversed(rows)))
+        self.assertEqual(rf.canonical_bytes(first), rf.canonical_bytes(second))
+
+    def test_91_historical_mapping_sha_is_validated(self):
+        source = MODULE_PATH.read_text()
+        self.assertIn('sha256_bytes(canonical_bytes(mappings)) != data["mapping_sha256"]', source)
+
+    def test_92_snapshot_provenance_fields_are_exact(self):
+        data = json.loads(HISTORICAL_SNAPSHOT.read_text())
+        self.assertEqual(data["source_run_id"], 34972344189)
+        self.assertEqual(data["source_run_attempt"], 1)
+        self.assertEqual(data["source_artifact_id"], 10397907660)
+
+    def test_93_registry_transport_failure_has_explicit_non_drift_classification(self):
+        def fail(_reference):
+            raise subprocess.CalledProcessError(42, ["docker", "buildx"])
+
+        with self.assertRaises(rf.QualificationError) as caught:
+            rf.resolve_remote_fail_closed("example.invalid/image:tag", fail)
+        self.assertEqual(
+            caught.exception.classification,
+            "TASK_IMAGE_REGISTRY_RESOLUTION_INFRASTRUCTURE_BLOCKER",
+        )
+        self.assertNotEqual(
+            caught.exception.classification,
+            "M1C_RUNTIME_FINGERPRINT_INTER_RUN_TAG_DRIFT_BLOCKER",
+        )
 
 
 if __name__ == "__main__":

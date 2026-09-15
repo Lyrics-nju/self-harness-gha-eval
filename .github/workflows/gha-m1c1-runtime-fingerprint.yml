@@ -59,6 +59,7 @@ jobs:
             --stable-pool splits/stable_task_pool_v3.json \
             --dataset-root work/tb21/terminal-bench-2-1 \
             --dataset-identity reports/dataset_resolution.json \
+            --historical-task-image-map evidence/m1c/runtime_fingerprint/historical_task_image_map_run_34972344189_v1.json \
             --reports reports
       - name: Fail-closed evidence scan and complete hash manifest
         id: scan

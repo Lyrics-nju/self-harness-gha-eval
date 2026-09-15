@@ -16,8 +16,15 @@ from typing import Any, Callable, Iterable
 
 SCHEMA_VERSION = "runtime_fingerprint_v1"
 SELECTOR_SCHEMA_VERSION = "artifact_class_selector_v1"
+HISTORICAL_MAP_SCHEMA_VERSION = "m1c_runtime_fingerprint_historical_task_image_map_v1"
 STABLE_POOL_SHA256 = "d3cf005c96355a618843982e47d3c130616766795d2b4f8a54bd9c1ace917fef"
 DATASET_SHA256 = "7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a"
+HISTORICAL_MAP_SHA256 = "16549c89b096aea3a635167b4a80e53d0628722d71df6346b9a20ca221b26f32"
+HISTORICAL_MAPPING_SHA256 = "6962ffc8e2df29603c6ed3c2f7976f8c7b9a0e216d656142d93b2704f176efcb"
+HISTORICAL_RUN_ID = 34972344189
+HISTORICAL_RUN_ATTEMPT = 1
+HISTORICAL_HEAD_SHA = "b47f1ba0da44707d035d300d01ba950ad7e51efc"
+HISTORICAL_ARTIFACT_ID = 10397907660
 STABLE_TASK_COUNT = 24
 PLATFORM_OS = "linux"
 PLATFORM_ARCH = "amd64"
@@ -28,6 +35,7 @@ INDEX_MEDIA_TYPES = {
     "application/vnd.docker.distribution.manifest.list.v2+json",
     "application/vnd.oci.image.index.v1+json",
 }
+DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
 class QualificationError(RuntimeError):
@@ -72,6 +80,103 @@ def validate_dataset_identity(path: Path) -> None:
     actual = data.get("resolved_content_hash") or data.get("dataset_version_content_hash")
     if actual != DATASET_SHA256 or data.get("identity_match_17g") is False:
         raise QualificationError("TB21_DATASET_IDENTITY_DRIFT", f"resolved={actual!r}")
+
+
+def load_historical_task_image_map(
+    path: Path,
+    stable_task_ids: list[str],
+    expected_snapshot_sha256: str = HISTORICAL_MAP_SHA256,
+    expected_mapping_sha256: str = HISTORICAL_MAPPING_SHA256,
+) -> dict[str, dict[str, str]]:
+    raw = path.read_bytes()
+    if sha256_bytes(raw) != expected_snapshot_sha256:
+        raise QualificationError("HISTORICAL_TASK_IMAGE_MAP_IDENTITY_DRIFT", str(path))
+    try:
+        data = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise QualificationError("HISTORICAL_TASK_IMAGE_MAP_INVALID", str(exc)) from exc
+    if raw != canonical_bytes(data):
+        raise QualificationError("HISTORICAL_TASK_IMAGE_MAP_NONDETERMINISTIC", str(path))
+    expected = {
+        "schema_version": HISTORICAL_MAP_SCHEMA_VERSION,
+        "source_run_id": HISTORICAL_RUN_ID,
+        "source_run_attempt": HISTORICAL_RUN_ATTEMPT,
+        "source_head_sha": HISTORICAL_HEAD_SHA,
+        "source_artifact_id": HISTORICAL_ARTIFACT_ID,
+        "stable_pool_sha256": STABLE_POOL_SHA256,
+        "dataset_identity": f"sha256:{DATASET_SHA256}",
+        "platform": f"{PLATFORM_OS}/{PLATFORM_ARCH}",
+        "mapping_sha256": expected_mapping_sha256,
+    }
+    for field, value in expected.items():
+        if data.get(field) != value:
+            raise QualificationError("HISTORICAL_TASK_IMAGE_MAP_PROVENANCE_DRIFT", f"{field}: {data.get(field)!r}")
+    mappings = data.get("mappings")
+    if not isinstance(mappings, list) or len(mappings) != STABLE_TASK_COUNT:
+        raise QualificationError("HISTORICAL_TASK_IMAGE_MAP_COUNT_MISMATCH", f"expected {STABLE_TASK_COUNT}")
+    if sha256_bytes(canonical_bytes(mappings)) != data["mapping_sha256"]:
+        raise QualificationError("HISTORICAL_TASK_IMAGE_MAPPING_IDENTITY_DRIFT", "mapping SHA mismatch")
+    by_task: dict[str, dict[str, str]] = {}
+    for item in mappings:
+        if not isinstance(item, dict) or set(item) != {"task", "authoritative_image_ref", "historical_platform_digest"}:
+            raise QualificationError("HISTORICAL_TASK_IMAGE_MAP_INVALID", "mapping fields")
+        task = item["task"]
+        reference = item["authoritative_image_ref"]
+        digest = item["historical_platform_digest"]
+        if not isinstance(task, str) or not isinstance(reference, str) or not reference:
+            raise QualificationError("HISTORICAL_TASK_IMAGE_MAP_INVALID", "task/reference")
+        if not isinstance(digest, str) or not DIGEST_PATTERN.fullmatch(digest):
+            raise QualificationError("HISTORICAL_TASK_IMAGE_MAP_INVALID", f"{task}: digest")
+        if task in by_task:
+            raise QualificationError("HISTORICAL_TASK_IMAGE_MAP_DUPLICATE_TASK", task)
+        by_task[task] = item
+    if set(by_task) != set(stable_task_ids):
+        raise QualificationError("HISTORICAL_CURRENT_TASK_SET_MISMATCH", "historical/stable task sets differ")
+    return by_task
+
+
+def compare_historical_task_image_map(
+    historical: dict[str, dict[str, str]], current: list[dict[str, Any]],
+) -> dict[str, Any]:
+    current_by_task: dict[str, dict[str, Any]] = {}
+    for item in current:
+        task = item.get("task_id")
+        digest = item.get("resolved_image_digest")
+        reference = item.get("authoritative_image_reference")
+        if not isinstance(task, str) or task in current_by_task:
+            raise QualificationError("CURRENT_TASK_IMAGE_EVIDENCE_INVALID", str(task))
+        if not isinstance(digest, str) or not DIGEST_PATTERN.fullmatch(digest):
+            raise QualificationError("CURRENT_TASK_IMAGE_DIGEST_EVIDENCE_INCOMPLETE", task)
+        if not isinstance(reference, str) or not reference:
+            raise QualificationError("CURRENT_TASK_IMAGE_EVIDENCE_INVALID", task)
+        current_by_task[task] = item
+    if set(current_by_task) != set(historical):
+        raise QualificationError("HISTORICAL_CURRENT_TASK_SET_MISMATCH", "historical/current task sets differ")
+    rows = []
+    for task in sorted(historical):
+        old = historical[task]
+        now = current_by_task[task]
+        if now["authoritative_image_reference"] != old["authoritative_image_ref"]:
+            raise QualificationError("HISTORICAL_CURRENT_IMAGE_REFERENCE_MISMATCH", task)
+        matched = now["resolved_image_digest"] == old["historical_platform_digest"]
+        rows.append({
+            "authoritative_image_ref": old["authoritative_image_ref"],
+            "current_platform_digest": now["resolved_image_digest"],
+            "historical_platform_digest": old["historical_platform_digest"],
+            "match": matched,
+            "task": task,
+        })
+    drifted = [row for row in rows if not row["match"]]
+    return {
+        "schema_version": "m1c_runtime_fingerprint_inter_run_digest_comparison_v1",
+        "classification": (
+            "M1C_RUNTIME_FINGERPRINT_INTER_RUN_TAG_DRIFT_BLOCKER" if drifted else "INTER_RUN_TASK_IMAGE_DIGEST_IDENTITY_PASS"
+        ),
+        "historical_digest_matches": len(rows) - len(drifted),
+        "drift_count": len(drifted),
+        "drifted_tasks": [row["task"] for row in drifted],
+        "comparisons": rows,
+    }
 
 
 def registry_of(reference: str) -> str:
@@ -199,6 +304,22 @@ def resolve_remote(reference: str, runner: Callable[[list[str]], subprocess.Comp
         output = runner(["docker", "buildx", "imagetools", "inspect", "--raw", selected_ref]).stdout
         selected_raw = output.encode() if isinstance(output, str) else output
     return bind_selected_manifest({"authoritative_image_reference": reference, **result}, selected_raw), selected_raw
+
+
+def resolve_remote_fail_closed(
+    reference: str,
+    resolver: Callable[[str], tuple[dict[str, Any], bytes]] = resolve_remote,
+) -> tuple[dict[str, Any], bytes]:
+    """Keep registry/infrastructure failures distinct from proven digest drift."""
+    try:
+        return resolver(reference)
+    except QualificationError:
+        raise
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = f"{reference}: {type(exc).__name__}"
+        if isinstance(exc, subprocess.CalledProcessError):
+            detail += f" exit={exc.returncode}"
+        raise QualificationError("TASK_IMAGE_REGISTRY_RESOLUTION_INFRASTRUCTURE_BLOCKER", detail) from exc
 
 
 FINGERPRINT_SCRIPT = r"""
@@ -434,12 +555,13 @@ def census(args: argparse.Namespace) -> int:
     try:
         task_ids = load_stable_pool(args.stable_pool)
         validate_dataset_identity(args.dataset_identity)
+        historical = load_historical_task_image_map(args.historical_task_image_map, task_ids)
         mapping = resolve_task_image_map(task_ids, args.dataset_root)
         initial: dict[str, dict[str, Any]] = {}
         bound: list[dict[str, Any]] = []
         for row in mapping:
             reference = row["authoritative_image_reference"]
-            resolved, selected_raw = resolve_remote(reference)
+            resolved, selected_raw = resolve_remote_fail_closed(reference)
             merged = bind_selected_manifest({**row, **resolved}, selected_raw)
             if reference in initial:
                 assert_no_tag_drift(initial[reference], merged)
@@ -448,13 +570,25 @@ def census(args: argparse.Namespace) -> int:
         write_json(reports / "task-image-map.json", {"schema_version": SCHEMA_VERSION, "tasks": bound})
         unique = deduplicate_exact_digests(bound)
         write_json(reports / "unique-image-digests.json", {"schema_version": SCHEMA_VERSION, "images": unique})
+        confirmed: dict[str, tuple[dict[str, Any], bytes]] = {}
+        for item in unique:
+            reference = item["representative_image_reference"]
+            again, selected_raw = resolve_remote_fail_closed(reference)
+            again = bind_selected_manifest({**initial[reference], **again}, selected_raw)
+            assert_no_tag_drift(initial[reference], again)
+            confirmed[item["resolved_image_digest"]] = (again, selected_raw)
+        comparison = compare_historical_task_image_map(historical, bound)
+        write_json(reports / "inter-run-digest-comparison.json", comparison)
+        if comparison["drift_count"]:
+            raise QualificationError(
+                "M1C_RUNTIME_FINGERPRINT_INTER_RUN_TAG_DRIFT_BLOCKER",
+                ",".join(comparison["drifted_tasks"]),
+            )
         fingerprints: list[dict[str, Any]] = []
         for index, item in enumerate(unique, 1):
             reference = item["representative_image_reference"]
-            again, selected_raw = resolve_remote(reference)
-            again = bind_selected_manifest({**initial[reference], **again}, selected_raw)
-            assert_no_tag_drift(initial[reference], again)
             digest = item["resolved_image_digest"]
+            again, selected_raw = confirmed[digest]
             raw_dir = raw_root / f"{index:02d}-{digest.replace(':', '-')}"
             raw_dir.mkdir(parents=True, exist_ok=True)
             write_json(raw_dir / "manifest-resolution.json", again)
@@ -505,6 +639,7 @@ def main() -> int:
     parser.add_argument("--stable-pool", type=Path, required=True)
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--dataset-identity", type=Path, required=True)
+    parser.add_argument("--historical-task-image-map", type=Path, required=True)
     parser.add_argument("--reports", type=Path, required=True)
     return census(parser.parse_args())
 
