@@ -103,6 +103,8 @@ class RuntimeFingerprintTests(unittest.TestCase):
         fp = {
             "uname_s": "Linux", "uname_m": "x86_64", "libc_getconf": "glibc 2.36",
             "dynamic_loader_path": "/lib64/ld-linux-x86-64.so.2", "dynamic_loader_identity": "ld.so 2.36",
+            "dynamic_loader_detection_method": "READELF_PT_INTERP",
+            "dynamic_loader_detection_evidence": "probe=/bin/sh;pt_interp=/lib64/ld-linux-x86-64.so.2",
             "installed_agent_writable": "PASS", "tmp_writable": "PASS", "local_exec": "PASS",
             "dev_pts": "PRESENT", "dev_ptmx": "PRESENT",
         }
@@ -199,6 +201,8 @@ class RuntimeFingerprintTests(unittest.TestCase):
         fp = {
             "uname_s": "Linux", "uname_m": "x86_64", "libc_getconf": "glibc 2.36",
             "dynamic_loader_path": "/lib64/ld-linux-x86-64.so.2", "dynamic_loader_identity": "ld.so 2.36",
+            "dynamic_loader_detection_method": "READELF_PT_INTERP",
+            "dynamic_loader_detection_evidence": "probe=/bin/sh;pt_interp=/lib64/ld-linux-x86-64.so.2",
             "installed_agent_writable": "FAIL", "tmp_writable": "PASS", "local_exec": "PASS",
             "dev_pts": "PRESENT", "dev_ptmx": "PRESENT",
         }
@@ -225,6 +229,159 @@ class RuntimeFingerprintTests(unittest.TestCase):
             "splits/stable_task_pool_v3.json.gz.b64",
         ):
             self.assertEqual(manifest.count(path), 1)
+
+    def test_34_shell_loader_variable_expands_before_emit(self):
+        self.assertIn('emit dynamic_loader_path "${loader:-$na}"', rf.FINGERPRINT_SCRIPT)
+        self.assertNotIn('emit dynamic_loader_path "\\${loader:-$na}"', rf.FINGERPRINT_SCRIPT)
+
+    def test_35_observed_literal_fallback_is_rejected(self):
+        with self.assertRaises(rf.QualificationError) as caught:
+            rf.parse_fingerprint("dynamic_loader_path\t${loader:-NOT_AVAILABLE}\n")
+        self.assertEqual(caught.exception.classification, "RUNTIME_FINGERPRINT_UNRESOLVED_SHELL_PLACEHOLDER")
+
+    def test_36_simple_shell_variable_is_rejected(self):
+        for value in ("$loader", "${loader}"):
+            with self.subTest(value=value), self.assertRaises(rf.QualificationError):
+                rf.parse_fingerprint(f"dynamic_loader_path\t{value}\n")
+
+    def test_37_true_absence_is_exact_not_available(self):
+        parsed = rf.parse_fingerprint("dynamic_loader_path\t\n")
+        self.assertEqual(parsed["dynamic_loader_path"], rf.NOT_AVAILABLE)
+
+    def test_38_readelf_pt_interp_is_authoritative(self):
+        exists = lambda path: path in {"/bin/sh", "/lib64/ld-linux-x86-64.so.2"}
+        selected = rf.select_loader_candidate(
+            [("READELF_PT_INTERP", "/lib64/ld-linux-x86-64.so.2")],
+            ["/lib/other-loader.so"], exists,
+        )
+        self.assertEqual(selected[:2], ("/lib64/ld-linux-x86-64.so.2", "READELF_PT_INTERP"))
+
+    def test_39_ldd_fallback_when_readelf_unavailable(self):
+        exists = lambda path: path == "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
+        selected = rf.select_loader_candidate(
+            [("READELF_PT_INTERP", ""), ("LDD_INTERPRETER_LINE", "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2")],
+            [], exists,
+        )
+        self.assertEqual(selected[1], "LDD_INTERPRETER_LINE")
+
+    def test_40_loader_path_must_exist(self):
+        selected = rf.select_loader_candidate(
+            [("READELF_PT_INTERP", "/missing/ld.so")], [], lambda _path: False,
+        )
+        self.assertEqual(selected[0], rf.NOT_AVAILABLE)
+
+    def test_41_loader_identity_is_independent(self):
+        parsed = rf.parse_fingerprint(
+            "dynamic_loader_path\t/lib/ld.so\n"
+            "dynamic_loader_identity\tcustom loader version\n"
+        )
+        self.assertEqual(parsed["dynamic_loader_path"], "/lib/ld.so")
+        self.assertEqual(parsed["dynamic_loader_identity"], "custom loader version")
+
+    def test_42_ambiguous_filesystem_candidates_fail_closed(self):
+        selected = rf.select_loader_candidate([], ["/lib/ld-a.so", "/lib/ld-b.so"], lambda _path: True)
+        self.assertEqual(selected, (rf.NOT_AVAILABLE, "FILESYSTEM_AMBIGUOUS", "candidate_count=2"))
+
+    def test_43_authoritative_source_disambiguates_filesystem(self):
+        selected = rf.select_loader_candidate(
+            [("READELF_PT_INTERP", "/lib/ld-b.so")], ["/lib/ld-a.so", "/lib/ld-b.so"], lambda _path: True,
+        )
+        self.assertEqual(selected[0], "/lib/ld-b.so")
+
+    def _assert_generic_glibc_fixture(self, path: str, identity: str):
+        fp = {
+            "uname_s": "Linux", "uname_m": "x86_64", "libc_getconf": identity,
+            "dynamic_loader_path": path, "dynamic_loader_identity": identity,
+            "dynamic_loader_detection_method": "READELF_PT_INTERP",
+            "dynamic_loader_detection_evidence": f"probe=/bin/sh;pt_interp={path}",
+            "installed_agent_writable": "PASS", "tmp_writable": "PASS", "local_exec": "PASS",
+            "dev_pts": "PRESENT", "dev_ptmx": "PRESENT",
+        }
+        self.assertEqual(rf.classification_for(fp), "TASK_RUNTIME_FINGERPRINT_QUALIFIED")
+
+    def test_44_debian_bullseye_fixture_is_generic(self):
+        self._assert_generic_glibc_fixture("/lib64/ld-linux-x86-64.so.2", "glibc 2.31")
+
+    def test_45_ubuntu_glibc_fixture_is_generic(self):
+        self._assert_generic_glibc_fixture("/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", "glibc 2.39")
+
+    def test_46_debian_bookworm_fixture_is_generic(self):
+        self._assert_generic_glibc_fixture("/lib64/ld-linux-x86-64.so.2", "glibc 2.36")
+
+    def test_47_libc_version_does_not_substitute_for_loader(self):
+        fp = {"uname_s": "Linux", "uname_m": "x86_64", "libc_getconf": "glibc 2.36"}
+        self.assertEqual(rf.classification_for(fp), "COMPATIBILITY_NOT_YET_PROVEN")
+
+    def test_48_missing_loader_identity_is_not_proven(self):
+        fp = {
+            "uname_s": "Linux", "uname_m": "x86_64", "libc_getconf": "glibc 2.31",
+            "dynamic_loader_path": "/lib64/ld-linux-x86-64.so.2",
+            "dynamic_loader_detection_method": "READELF_PT_INTERP",
+            "dynamic_loader_detection_evidence": "probe=/bin/sh;pt_interp=/lib64/ld-linux-x86-64.so.2",
+            "installed_agent_writable": "PASS", "tmp_writable": "PASS", "local_exec": "PASS",
+            "dev_pts": "PRESENT", "dev_ptmx": "PRESENT",
+        }
+        self.assertEqual(rf.classification_for(fp), "COMPATIBILITY_NOT_YET_PROVEN")
+
+    def test_49_no_qemu_task_special_case(self):
+        self.assertNotIn("qemu-startup", MODULE_PATH.read_text())
+
+    def test_50_detection_order_is_deterministic(self):
+        source = rf.FINGERPRINT_SCRIPT
+        self.assertLess(source.index("READELF_PT_INTERP"), source.index("LDD_INTERPRETER_LINE"))
+        self.assertLess(source.index("LDD_INTERPRETER_LINE"), source.index("FILESYSTEM_UNIQUE_CANDIDATE"))
+
+    def test_51_tag_digest_logic_unchanged(self):
+        self.assertIn("assert_no_tag_drift(initial[reference], again)", MODULE_PATH.read_text())
+
+    def test_52_exact_digest_dedup_policy_unchanged(self):
+        self.assertEqual(len(rf.deduplicate_exact_digests([
+            {"task_id": "a", "authoritative_image_reference": "same:tag", "resolved_image_digest": "sha256:a"},
+            {"task_id": "b", "authoritative_image_reference": "same:tag", "resolved_image_digest": "sha256:b"},
+        ])), 2)
+
+    def test_53_cleanup_behavior_remains_finally_scoped(self):
+        source = MODULE_PATH.read_text()
+        self.assertLess(source.index("finally:"), source.index('["docker", "image", "rm", "-f"'))
+
+    def test_54_no_dsh_execution_build_or_install(self):
+        lower = self.workflow.lower()
+        for token in ("dsh ", "pnpm run build", "dshharboradapter", "deepseek-harness"):
+            self.assertNotIn(token, lower)
+
+    def test_55_no_provider_or_evaluator_execution(self):
+        lower = self.workflow.lower()
+        for token in ("deepseek_api_key", "harbor run", "oracle", "verifier", "provider request"):
+            self.assertNotIn(token, lower)
+
+    def test_56_schema_includes_loader_detection_provenance(self):
+        parsed = rf.parse_fingerprint("")
+        self.assertEqual(parsed["dynamic_loader_detection_method"], rf.NOT_AVAILABLE)
+        self.assertEqual(parsed["dynamic_loader_detection_evidence"], rf.NOT_AVAILABLE)
+
+    def test_57_candidate_key_includes_validated_loader_path(self):
+        key = rf.candidate_runtime_key({"dynamic_loader_path": "/lib/ld.so"})
+        self.assertEqual(key["dynamic_loader_path"], "/lib/ld.so")
+
+    def test_58_all_runtime_strings_reject_bug_class(self):
+        for field in ("dynamic_loader_path", "default_shell", "mount_root"):
+            with self.subTest(field=field), self.assertRaises(rf.QualificationError):
+                rf.parse_fingerprint(f"{field}\tvalue-${{unexpanded}}\n")
+
+    def test_59_whitespace_only_is_not_available(self):
+        parsed = rf.parse_fingerprint("dynamic_loader_detection_evidence\t   \n")
+        self.assertEqual(parsed["dynamic_loader_detection_evidence"], rf.NOT_AVAILABLE)
+
+    def test_60_filesystem_fallback_is_unique_only(self):
+        selected = rf.select_loader_candidate([], ["/lib/ld.so", "/lib/ld.so"], lambda _path: True)
+        self.assertEqual(selected[1], "FILESYSTEM_UNIQUE_CANDIDATE")
+
+    def test_61_identity_execution_is_read_only(self):
+        self.assertIn('"$loader" --version', rf.FINGERPRINT_SCRIPT)
+
+    def test_62_hash_and_secret_contract_unchanged(self):
+        self.assertIn("sha256sum -c SHA256SUMS", self.workflow)
+        self.assertIn("public_secret_scan.py --artifact-mode reports", self.workflow)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -216,14 +217,58 @@ if test -n "$libc_path"; then
   symbols="$(grep -aoE 'GLIBC_[0-9]+(\.[0-9]+)*' "$libc_path" 2>/dev/null | sort -Vu | tr '\n' ',' | sed 's/,$//' || true)"
   emit glibc_symbol_versions "${symbols:-$na}"
 else emit glibc_symbol_versions "$na"; fi
-loader="$(find /lib /lib64 /usr/lib -maxdepth 3 -type f -name 'ld-linux*' 2>/dev/null | sort | head -1)"
-emit dynamic_loader_path "\${loader:-$na}"
-if test -n "$loader"; then emit dynamic_loader_identity "$("$loader" --version 2>&1 | head -1 || printf %s "$na")"; else emit dynamic_loader_identity "$na"; fi
+loader=
+loader_method=$na
+loader_evidence=$na
+probe_executable=
+for candidate in /bin/sh /usr/bin/env /bin/ls; do
+  if test -e "$candidate"; then probe_executable=$candidate; break; fi
+done
+if test -n "$probe_executable" && command -v readelf >/dev/null 2>&1; then
+  interp="$(readelf -l "$probe_executable" 2>/dev/null | sed -n 's/.*Requesting program interpreter: \([^]]*\)].*/\1/p' | head -1)"
+  if test -n "$interp" && test -e "$interp"; then
+    loader=$interp
+    loader_method=READELF_PT_INTERP
+    loader_evidence="probe=$probe_executable;pt_interp=$interp"
+  fi
+fi
+if test -z "$loader" && test -n "$probe_executable" && command -v ldd >/dev/null 2>&1; then
+  interp="$(ldd "$probe_executable" 2>/dev/null | awk '{for(i=1;i<=NF;i++){v=$i; gsub(/[()]/,"",v); if(v ~ /^\// && v ~ /(ld-linux|ld-musl|\/ld-[^/]*\.so)/){print v; exit}}}')"
+  if test -n "$interp" && test -e "$interp"; then
+    loader=$interp
+    loader_method=LDD_INTERPRETER_LINE
+    loader_evidence="probe=$probe_executable;ldd_interpreter=$interp"
+  fi
+fi
+if test -z "$loader"; then
+  loader_candidates="$(find /lib /lib64 /usr/lib -maxdepth 4 \( -type f -o -type l \) \( -name 'ld-linux*.so*' -o -name 'ld-musl-*.so*' -o -name 'ld-*.so' \) -print 2>/dev/null | while IFS= read -r item; do test -e "$item" && readlink -f "$item"; done | sort -u)"
+  loader_count="$(printf '%s\n' "$loader_candidates" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if test "$loader_count" = 1; then
+    loader="$(printf '%s\n' "$loader_candidates" | sed '/^$/d')"
+    loader_method=FILESYSTEM_UNIQUE_CANDIDATE
+    loader_evidence="unique_candidate=$loader"
+  elif test "$loader_count" -gt 1; then
+    loader_method=FILESYSTEM_AMBIGUOUS
+    loader_evidence="candidate_count=$loader_count"
+  fi
+fi
+if test -n "$loader" && ! test -e "$loader"; then
+  loader=
+  loader_method=PATH_VALIDATION_FAILED
+  loader_evidence=resolved_path_missing
+fi
+emit dynamic_loader_path "${loader:-$na}"
+emit dynamic_loader_detection_method "$loader_method"
+emit dynamic_loader_detection_evidence "$loader_evidence"
+if test -n "$loader"; then
+  loader_identity="$("$loader" --version 2>&1 | head -1 || true)"
+  emit dynamic_loader_identity "${loader_identity:-$na}"
+else emit dynamic_loader_identity "$na"; fi
 emit uid "$(id -u 2>/dev/null || printf %s "$na")"
 emit gid "$(id -g 2>/dev/null || printf %s "$na")"
 emit user "$(id -un 2>/dev/null || printf %s "$na")"
 emit cwd "$(pwd 2>/dev/null || printf %s "$na")"
-emit default_shell "\${SHELL:-$na}"
+emit default_shell "${SHELL:-$na}"
 emit dev_pts "$(test -d /dev/pts && printf PRESENT || printf ABSENT)"
 emit dev_ptmx "$(test -c /dev/ptmx && printf PRESENT || printf ABSENT)"
 emit seccomp "$(awk '/^Seccomp:/{print $2}' /proc/1/status 2>/dev/null || printf %s "$na")"
@@ -242,15 +287,49 @@ emit mount_root "$(awk '$2=="/"{print $3":"$4; found=1} END{if(!found)print "NOT
 """.strip()
 
 
+UNRESOLVED_SHELL_TOKEN = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^{}\r\n]+\})")
+
+
+def contains_unresolved_shell_token(value: str) -> bool:
+    return bool(UNRESOLVED_SHELL_TOKEN.search(value))
+
+
+def normalize_fingerprint_value(field: str, value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        return NOT_AVAILABLE
+    if contains_unresolved_shell_token(normalized):
+        raise QualificationError("RUNTIME_FINGERPRINT_UNRESOLVED_SHELL_PLACEHOLDER", f"{field}: unresolved shell token")
+    return normalized
+
+
+def select_loader_candidate(
+    authoritative_candidates: Iterable[tuple[str, str]],
+    filesystem_candidates: Iterable[str],
+    exists: Callable[[str], bool],
+) -> tuple[str, str, str]:
+    """Model the in-container deterministic loader selection for fixture tests."""
+    for method, candidate in authoritative_candidates:
+        if candidate and exists(candidate):
+            return candidate, method, f"authoritative_path={candidate}"
+    available = sorted({candidate for candidate in filesystem_candidates if candidate and exists(candidate)})
+    if len(available) == 1:
+        return available[0], "FILESYSTEM_UNIQUE_CANDIDATE", f"unique_candidate={available[0]}"
+    if len(available) > 1:
+        return NOT_AVAILABLE, "FILESYSTEM_AMBIGUOUS", f"candidate_count={len(available)}"
+    return NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE
+
+
 def parse_fingerprint(text: str) -> dict[str, str]:
     result: dict[str, str] = {}
     for line in text.splitlines():
         key, sep, value = line.partition("\t")
         if sep and key:
-            result[key] = value if value else NOT_AVAILABLE
+            result[key] = normalize_fingerprint_value(key, value)
     for key in (
         "os_release_b64", "libc_getconf", "libc_path", "glibc_symbol_versions", "ldd_version", "dynamic_loader_path",
-        "dynamic_loader_identity", "seccomp", "no_new_privs", "landlock_securityfs",
+        "dynamic_loader_identity", "dynamic_loader_detection_method", "dynamic_loader_detection_evidence",
+        "seccomp", "no_new_privs", "landlock_securityfs",
         "node_version", "node_abi", "napi_version", "mount_root",
     ):
         result.setdefault(key, NOT_AVAILABLE)
@@ -267,6 +346,7 @@ def candidate_runtime_key(fingerprint: dict[str, Any]) -> dict[str, str]:
             if fingerprint.get("glibc_symbol_versions", NOT_AVAILABLE) != NOT_AVAILABLE else NOT_AVAILABLE
         ),
         "dynamic_loader_identity": fingerprint.get("dynamic_loader_identity", NOT_AVAILABLE),
+        "dynamic_loader_path": fingerprint.get("dynamic_loader_path", NOT_AVAILABLE),
         "kernel_security_contract": "|".join(str(fingerprint.get(key, NOT_AVAILABLE)) for key in ("seccomp", "no_new_privs", "landlock_securityfs", "dev_pts", "dev_ptmx")),
         "artifact_node_contract": "ARTIFACT_PROVIDED_NOT_YET_QUALIFIED",
         "canonical_runtime_layout": CANONICAL_LAYOUT,
@@ -274,7 +354,10 @@ def candidate_runtime_key(fingerprint: dict[str, Any]) -> dict[str, str]:
 
 
 def classification_for(fingerprint: dict[str, Any]) -> str:
-    required = ("uname_s", "uname_m", "libc_getconf", "dynamic_loader_path", "dynamic_loader_identity")
+    required = (
+        "uname_s", "uname_m", "libc_getconf", "dynamic_loader_path", "dynamic_loader_identity",
+        "dynamic_loader_detection_method", "dynamic_loader_detection_evidence",
+    )
     capabilities = {
         "installed_agent_writable": "PASS", "tmp_writable": "PASS", "local_exec": "PASS",
         "dev_pts": "PRESENT", "dev_ptmx": "PRESENT",
