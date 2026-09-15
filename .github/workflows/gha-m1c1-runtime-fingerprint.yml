@@ -1,0 +1,78 @@
+name: M1C.1 Stable-Pool Runtime Fingerprint Qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m1c1-stable-runtime-fingerprint
+  cancel-in-progress: false
+
+jobs:
+  fingerprint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Frozen input and no-model regression gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports work/tb21
+          base64 --decode splits/stable_task_pool_v3.json.gz.b64 | gzip -dc > splits/stable_task_pool_v3.json
+          test "$(sha256sum splits/stable_task_pool_v3.json | cut -d' ' -f1)" = d3cf005c96355a618843982e47d3c130616766795d2b4f8a54bd9c1ace917fef
+          python3 -m unittest evaluation.tests.test_m1c_runtime_fingerprint -v
+          python3 -m unittest \
+            evaluation.tests.test_tb21_dataset_policy \
+            evaluation.tests.test_public_secret_scan_structured -v
+          {
+            echo "GITHUB_SHA=$GITHUB_SHA"
+            echo "ImageOS=${ImageOS:-NOT_AVAILABLE}"
+            echo "ImageVersion=${ImageVersion:-NOT_AVAILABLE}"
+            uname -a
+            docker version
+            docker buildx version
+            df -B1 /
+          } > reports/runner.txt 2>&1
+      - name: Materialize exact public TB2.1 definitions without task execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -LsSf --retry 0 https://astral.sh/uv/install.sh | sh
+          export PATH="$HOME/.local/bin:$PATH"
+          uv tool install 'harbor==0.21.0'
+          test "$(harbor --version)" = 0.21.0
+          HARBOR_PY="$HOME/.local/share/uv/tools/harbor/bin/python"
+          env HARBOR_PY="$HARBOR_PY" "$HARBOR_PY" -m unittest discover -s evaluation/tests -p 'test_m1c*.py' -v
+          env -u HARBOR_API_KEY "$HOME/.local/share/uv/tools/harbor/bin/python" scripts/gha_tb21_resolve_exact.py
+          test "$(python3 -c 'import json; print(json.load(open("reports/dataset_resolution.json"))["resolved_content_hash"])')" = 7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a
+          env -u HARBOR_API_KEY harbor download \
+            terminal-bench/terminal-bench-2-1@sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a \
+            --output-dir work/tb21 --export
+      - name: Resolve and fingerprint exact task images sequentially
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/gha_m1c1_runtime_fingerprint.py \
+            --stable-pool splits/stable_task_pool_v3.json \
+            --dataset-root work/tb21/terminal-bench-2-1 \
+            --dataset-identity reports/dataset_resolution.json \
+            --reports reports
+      - name: Fail-closed evidence scan and complete hash manifest
+        id: scan
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/public_secret_scan.py --artifact-mode reports | tee reports/secret-scan.txt
+          find reports -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum | sed 's#  reports/#  #' > reports/SHA256SUMS
+          (cd reports && sha256sum -c SHA256SUMS)
+      - name: Upload reached safe evidence
+        if: always() && steps.scan.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: m1c1-runtime-fingerprint-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/
+          if-no-files-found: error

@@ -104,3 +104,7 @@ evaluation/tests/test_m1c_evidence_safety_workflow.py
 scripts/m1c_evidence_safety_probe.py
 .github/workflows/gha-m1c1-evidence-safety-probe.yml
 reports/m1c_live_run_34113571888_scanner_forensics.md
+.github/workflows/gha-m1c1-runtime-fingerprint.yml
+evaluation/tests/test_m1c_runtime_fingerprint.py
+scripts/gha_m1c1_runtime_fingerprint.py
+splits/stable_task_pool_v3.json.gz.b64
