@@ -16,6 +16,8 @@ jobs:
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Frozen input and no-model regression gates
         shell: bash
         run: |

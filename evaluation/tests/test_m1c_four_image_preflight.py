@@ -162,9 +162,15 @@ class HistoryPreflightTests(unittest.TestCase):
         self.assertLess(lane.index("public_secret_scan.py"), lane.index("actions/upload-artifact@v4"))
         self.assertNotIn("job.log", lane)
 
-    def test_18_formal_workflow_and_gates_unchanged(self):
+    def test_18_formal_workflow_only_history_configuration_changes(self):
         for file in (".github/workflows/gha-m1c1-runtime-fingerprint.yml", h.FROZEN_SOURCE, "scripts/gha_m1c1_four_image_loader_probe.py"):
             prior = subprocess.check_output(["git", "show", h.REQUIRED_PARENT + ":" + file], cwd=ROOT)
+            if file == ".github/workflows/gha-m1c1-runtime-fingerprint.yml":
+                checkout = b"      - uses: actions/checkout@v4\n"
+                self.assertEqual(prior.count(checkout), 1)
+                # Exactly this authorized history-only addition; no other
+                # workflow execution, input or scientific-gate changes.
+                prior = prior.replace(checkout, checkout + b"        with:\n          fetch-depth: 0\n", 1)
             self.assertEqual(prior, (ROOT / file).read_bytes())
 
     def test_19_scanner_unchanged(self):
