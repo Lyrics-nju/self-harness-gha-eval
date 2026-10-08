@@ -26,5 +26,5 @@
   "build_duration": "NOT_MEASURED",
   "builder_image": "BUILDER_IMAGE_NOT_YET_CREATED",
   "dockerfile_sha256": "b439c18d0d09dbd83d0b36688b406d89c0fccc6e21a82a534188ba4ce1190f26",
-  "context_sha256": "a38f56acbc7449845ce36651162934b7c891f133b6248af2ef3c3405cdd73482"
+  "context_sha256": "b4b9eaed685007c8b5811686f7c0cd32f27104f81c999d08990621c42870f448"
 }

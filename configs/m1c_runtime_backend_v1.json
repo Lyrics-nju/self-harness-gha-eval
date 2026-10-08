@@ -1,0 +1,14 @@
+{
+  "schema": "m1c_runtime_backend_v1",
+  "harbor_version": "0.21.0",
+  "storage_configured_mb": 10240,
+  "storage_enforcement_status": "NOT_ENFORCED_BY_CURRENT_BACKEND",
+  "storage_hard_quota_verified": false,
+  "environment_tree_sha256": "62b5849afd2c8c93081a6d91b39cd6dc83323d23fe26b24e4b32a42ada1facfb",
+  "backend_sources": {
+    "environments/capabilities.py": "82fffe93761ba6ea677ed08a51563768426cfc95a14a7a464d97c2843edcf280",
+    "environments/docker/__init__.py": "77283b61cd219d01b795d940bd8ca608e04be43f696f6d0ffbce14499ceef7e5",
+    "environments/docker/docker.py": "8afcb733fac3ff9d0df0d7e4c6c0583a59ae6c0df0be196094157af36c8ee22d",
+    "environments/base.py": "74ce73b043041ac8ec3214b73613a9827ca878d8a97b32f0d572a7f9173fef08"
+  }
+}

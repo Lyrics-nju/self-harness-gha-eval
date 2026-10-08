@@ -139,6 +139,22 @@ def main() -> int:
         stage = Path(temporary) / "closure"
         stage_workspace(source, node_root, stage)
         a.pack(stage, provenance, output)
+        # Separate evidence lane, not an unversioned manifest-schema mutation.
+        manifest = json.loads((output / "manifest.json").read_bytes())
+        native = {}
+        for row in manifest["native_inventory"]:
+            inspected = subprocess.run(["readelf", "-h", "-d", "-V", str(stage / row["path"])],
+                                       capture_output=True, text=True, check=False, timeout=30)
+            a.require(inspected.returncode == 0, "NATIVE_ELF_INSPECTION_FAILED")
+            machine = re.search(r"Machine:\s*(.+)", inspected.stdout)
+            a.require(machine is not None, "NATIVE_ELF_MACHINE_MISSING")
+            native[row["path"]] = {"sha256": row["sha256"], "readelf_exit": inspected.returncode,
+                "machine": machine.group(1).strip(),
+                "needed_libraries": re.findall(r"\(NEEDED\).*?\[([^\]]+)\]", inspected.stdout),
+                "required_symbol_versions": sorted(set(re.findall(r"(?:GLIBC|GLIBCXX|CXXABI)_[0-9.]+", inspected.stdout))),
+                "compatibility_status": "NOT_YET_QUALIFIED"}
+        (output / "native-evidence.json").write_bytes(a.canonical(native))
+        a.require(not a.scan_tree(output, artifact_mode=True), "ARTIFACT_SECRET_SCAN_REJECTED")
     return 0
 
 

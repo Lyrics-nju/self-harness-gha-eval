@@ -114,11 +114,13 @@ class DockerTransport:
                   "RUNTIME_ENVIRONMENT_DRIFT")
         credential_names = [name for name in env_names if re.search(r"KEY|TOKEN|SECRET|AUTH|PASSWORD|COOKIE", name, re.I)]
         mounts = state.get("Mounts", [])
-        program_mounts = [m for m in mounts if m["Destination"] == PROGRAM]
+        program_mounts = [m for m in mounts if m["Destination"] in (PROGRAM, "/installed-agent")]
         a.require(len(program_mounts) == 1 and program_mounts[0]["Type"] == "bind" and
                   program_mounts[0]["RW"] is False and
                   not any(m["Destination"].startswith(PROGRAM + "/") for m in mounts), "READ_ONLY_PROGRAM_MOUNT_UNPROVEN")
-        a.verify_tree(Path(program_mounts[0]["Source"]), self.manifest)
+        mount = program_mounts[0]
+        host_program = Path(mount["Source"]) if mount["Destination"] == PROGRAM else Path(mount["Source"]) / "deepseek-harness"
+        a.verify_tree(host_program, self.manifest)
         host = state["HostConfig"]
         a.require(host.get("Privileged") is False and not any(
                       name in ("ALL", "SYS_ADMIN", "CAP_SYS_ADMIN") for name in (host.get("CapAdd") or [])),
@@ -187,7 +189,7 @@ class DockerTransport:
             a.require(summary["bulk_status"] != "BLOCKED", "BULK_SECRET_SCAN_REJECTED")
 
 
-def qualify(transport, bundle: Path, receipt_sha256: str, root: Path = ROOT) -> dict:
+def qualify(transport, bundle: Path, receipt_sha256: str, root: Path = ROOT, *, baseline: dict | None = None) -> dict:
     """Transport is a no-model setup integration seam, never a generic shell API.
 
     It must inspect the actual container/mount, verify the remote tree before and
@@ -197,10 +199,16 @@ def qualify(transport, bundle: Path, receipt_sha256: str, root: Path = ROOT) -> 
     manifest, receipt = a.load_bundle(bundle, receipt_sha256)
     selected = fixed_image(root)
     # Deliberately not supplied by a workflow-dispatch input or caller override.
-    a.require(isinstance(RESOURCE_ENVELOPE, dict) and bool(a.HEX.fullmatch(TASK_CONFIG_SHA256)),
+    if baseline is not None:
+        from scripts import m1c_runtime_resources as resources
+        resources.resource_gate(baseline)
+        envelope = baseline["resource_envelope"]
+    else:
+        envelope = RESOURCE_ENVELOPE
+    a.require(isinstance(envelope, dict) and bool(a.HEX.fullmatch(TASK_CONFIG_SHA256)),
               "ORIGINAL_HARBOR_SETUP_BINDING_UNRESOLVED")
     actual = transport.inspect()
-    validate_container(actual, selected, RESOURCE_ENVELOPE, TASK_CONFIG_SHA256)
+    validate_container(actual, selected, envelope, TASK_CONFIG_SHA256)
     a.require(actual["program_archive_sha256"] == receipt["archive_sha256"], "MOUNT_IDENTITY_DRIFT")
     a.require(transport.verify_program(manifest) is True, "REMOTE_PROGRAM_VERIFY_FAILED")
     results = []
@@ -231,7 +239,7 @@ def qualify(transport, bundle: Path, receipt_sha256: str, root: Path = ROOT) -> 
         transport.preserve_evidence(results, failure=failure, program_unchanged=unchanged)
         a.require(unchanged is True, "PROGRAM_TREE_MUTATION")
     after = transport.inspect()
-    validate_container(after, selected, RESOURCE_ENVELOPE, TASK_CONFIG_SHA256)
+    validate_container(after, selected, envelope, TASK_CONFIG_SHA256)
     a.require(after == actual, "CONTAINER_OR_MOUNT_DRIFT")
     return {"schema_version": "m1c_no_model_artifact_qualification_v1", "task_id": TASK,
             "status": "NO_MODEL_RUNTIME_CHECKS_PASS", "provider_requests": 0,

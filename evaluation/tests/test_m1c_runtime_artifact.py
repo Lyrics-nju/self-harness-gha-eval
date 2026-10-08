@@ -322,9 +322,10 @@ class ArtifactTests(unittest.TestCase):
         self.assertIn("home-a", probe); self.assertIn("home-b", probe)
 
     def test_42_no_workflow_or_arbitrary_dispatch_inputs(self):
-        # No independent workflow is needed until the external identities and
-        # Harbor read-only setup integration are explicitly frozen.
-        self.assertFalse((ROOT / ".github/workflows/gha-m1c1-runtime-artifact.yml").exists())
+        workflow = (ROOT / ".github/workflows/gha-m1c1-runtime-artifact.yml").read_text()
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("inputs:", workflow)
+        self.assertNotIn("DEEPSEEK_API_KEY", workflow)
         recipe = (ROOT / "gha/runtime-artifact-v1/Dockerfile").read_text()
         self.assertNotIn("pnpm install --frozen-lockfile", recipe)
         self.assertNotIn("pnpm run build", recipe)

@@ -1,0 +1,81 @@
+name: M1C.1 Artifact V1 No-Model Qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  qualification:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install frozen Harbor interpreter
+        run: |
+          set -euo pipefail
+          pipx install --python python3.12 harbor==0.21.0
+          mkdir -p reports work
+          python3 scripts/resolve_harbor_python.py --expected-version 0.21.0 --json > reports/artifact-harbor.json
+          HARBOR_PY="$(python3 -c 'import json; print(json.load(open("reports/artifact-harbor.json"))["interpreter"])')"
+          echo "HARBOR_PY=$HARBOR_PY" >> "$GITHUB_ENV"
+      - name: Offline artifact policy regressions before external build
+        run: |
+          set -euo pipefail
+          env -u PYTHONPATH "$HARBOR_PY" -m unittest evaluation.tests.test_m1c_runtime_artifact evaluation.tests.test_m1c_runtime_identity evaluation.tests.test_m1c_runtime_orchestration
+      - name: Download exact qualified census evidence only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/Lyrics-nju/self-harness-gha-eval/actions/artifacts/11537937939/zip > work/census.zip
+      - name: Execute single-shot ordered no-model chain
+        id: qualification
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          env -u PYTHONPATH "$HARBOR_PY" -m scripts.m1c_runtime_orchestrator run
+      - name: Independently scan and prepare evidence lanes
+        id: evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 -m scripts.m1c_runtime_orchestrator publish
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.evidence.outputs.safe == 'true'
+        with:
+          name: artifact-v1-safe-core-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifact-v1-evidence/safe-core/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.evidence.outputs.bulk == 'true'
+        with:
+          name: artifact-v1-scanned-bulk-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifact-v1-evidence/bulk/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.evidence.outputs.program == 'true'
+        with:
+          name: artifact-v1-verified-program-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifact-v1-evidence/program/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Enforce semantic result independently of Actions conclusion
+        if: always()
+        run: |
+          test '${{ steps.qualification.outcome }}' = success
+          test '${{ steps.evidence.outputs.bulk }}' = true
+          test '${{ steps.evidence.outputs.program }}' = true
+          python3 -c 'import json; s=json.load(open("work/artifact-v1/summary.json")); assert s["status"]=="NO_MODEL_RUNTIME_QUALIFIED" and s["resources"]["storage"]["enforcement_status"]=="NOT_ENFORCED_BY_CURRENT_BACKEND" and not s["resources"]["all_resource_limits_enforced"] and s["provider_requests"]==s["deepseek_requests"]==s["live_sessions"]==0'
