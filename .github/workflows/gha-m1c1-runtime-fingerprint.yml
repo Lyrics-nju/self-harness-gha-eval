@@ -23,7 +23,7 @@ jobs:
           mkdir -p reports work/tb21
           base64 --decode splits/stable_task_pool_v3.json.gz.b64 | gzip -dc > splits/stable_task_pool_v3.json
           test "$(sha256sum splits/stable_task_pool_v3.json | cut -d' ' -f1)" = d3cf005c96355a618843982e47d3c130616766795d2b4f8a54bd9c1ace917fef
-          python3 -m unittest evaluation.tests.test_m1c_runtime_fingerprint -v
+          python3 -m unittest evaluation.tests.test_m1c_runtime_fingerprint evaluation.tests.test_m1c_loader_identity -v
           python3 -m unittest \
             evaluation.tests.test_tb21_dataset_policy \
             evaluation.tests.test_public_secret_scan_structured -v

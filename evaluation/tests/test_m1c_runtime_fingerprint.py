@@ -105,6 +105,9 @@ class RuntimeFingerprintTests(unittest.TestCase):
         fp = {
             "uname_s": "Linux", "uname_m": "x86_64", "libc_getconf": "glibc 2.36",
             "dynamic_loader_path": "/lib64/ld-linux-x86-64.so.2", "dynamic_loader_identity": "ld.so 2.36",
+            "dynamic_loader_realpath": "/lib/ld.so", "dynamic_loader_sha256": "a" * 64,
+            "loader_binary_identity_status": "LOADER_BINARY_IDENTITY_VALID",
+            "dynamic_loader_identity_method": "HOST_SHA256_DOCKER_CP_RESOLVED_ELF",
             "dynamic_loader_detection_method": "READELF_PT_INTERP",
             "dynamic_loader_detection_evidence": "probe=/bin/sh;pt_interp=/lib64/ld-linux-x86-64.so.2",
             "installed_agent_writable": "PASS", "tmp_writable": "PASS", "local_exec": "PASS",
@@ -294,6 +297,9 @@ class RuntimeFingerprintTests(unittest.TestCase):
         fp = {
             "uname_s": "Linux", "uname_m": "x86_64", "libc_getconf": identity,
             "dynamic_loader_path": path, "dynamic_loader_identity": identity,
+            "dynamic_loader_realpath": path, "dynamic_loader_sha256": "a" * 64,
+            "loader_binary_identity_status": "LOADER_BINARY_IDENTITY_VALID",
+            "dynamic_loader_identity_method": "HOST_SHA256_DOCKER_CP_RESOLVED_ELF",
             "dynamic_loader_detection_method": "READELF_PT_INTERP",
             "dynamic_loader_detection_evidence": f"probe=/bin/sh;pt_interp={path}",
             "installed_agent_writable": "PASS", "tmp_writable": "PASS", "local_exec": "PASS",
@@ -379,7 +385,8 @@ class RuntimeFingerprintTests(unittest.TestCase):
         self.assertEqual(selected[1], "FILESYSTEM_UNIQUE_CANDIDATE")
 
     def test_61_identity_execution_is_read_only(self):
-        self.assertIn('"$loader" --version', rf.FINGERPRINT_SCRIPT)
+        self.assertNotIn('"$loader" --version', rf.FINGERPRINT_SCRIPT)
+        self.assertIn('probe loader_realpath readlink -f -- "$loader"', rf.FINGERPRINT_SCRIPT)
 
     def test_62_hash_and_secret_contract_unchanged(self):
         self.assertIn("sha256sum -c SHA256SUMS", self.workflow)

@@ -109,3 +109,5 @@ evaluation/tests/test_m1c_runtime_fingerprint.py
 scripts/gha_m1c1_runtime_fingerprint.py
 splits/stable_task_pool_v3.json.gz.b64
 evidence/m1c/runtime_fingerprint/historical_task_image_map_run_34972344189_v1.json
+evaluation/tests/test_m1c_loader_identity.py
+reports/m1c_loader_identity_evidence_validation_audit.md

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import re
@@ -14,8 +15,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-SCHEMA_VERSION = "runtime_fingerprint_v1"
-SELECTOR_SCHEMA_VERSION = "artifact_class_selector_v1"
+SCHEMA_VERSION = "runtime_fingerprint_v2"
+SELECTOR_SCHEMA_VERSION = "artifact_class_selector_v2"
 HISTORICAL_MAP_SCHEMA_VERSION = "m1c_runtime_fingerprint_historical_task_image_map_v1"
 STABLE_POOL_SHA256 = "d3cf005c96355a618843982e47d3c130616766795d2b4f8a54bd9c1ace917fef"
 DATASET_SHA256 = "7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a"
@@ -326,12 +327,26 @@ FINGERPRINT_SCRIPT = r"""
 set -u
 emit() { printf '%s\t%s\n' "$1" "$2"; }
 na=NOT_AVAILABLE
+probe() {
+  probe_name=$1; shift
+  probe_dir="$(mktemp -d)" || exit 1
+  "$@" > "$probe_dir/stdout" 2> "$probe_dir/stderr"
+  probe_exit=$?
+  probe_stdout="$(cat "$probe_dir/stdout")"
+  probe_stderr="$(cat "$probe_dir/stderr")"
+  emit "${probe_name}_exit" "$probe_exit"
+  emit "${probe_name}_stdout_b64" "$(base64 < "$probe_dir/stdout" | tr -d '\n')"
+  emit "${probe_name}_stderr_b64" "$(base64 < "$probe_dir/stderr" | tr -d '\n')"
+  rm -f "$probe_dir/stdout" "$probe_dir/stderr"; rmdir "$probe_dir"
+}
+probe release_getconf getconf GNU_LIBC_VERSION
+probe release_ldd ldd --version
 emit uname_s "$(uname -s 2>/dev/null || printf %s "$na")"
 emit uname_m "$(uname -m 2>/dev/null || printf %s "$na")"
 emit long_bit "$(getconf LONG_BIT 2>/dev/null || printf %s "$na")"
 if test -r /etc/os-release; then emit os_release_b64 "$(base64 < /etc/os-release 2>/dev/null | tr -d '\n' || printf %s "$na")"; else emit os_release_b64 "$na"; fi
-emit libc_getconf "$(getconf GNU_LIBC_VERSION 2>/dev/null || printf %s "$na")"
-emit ldd_version "$(ldd --version 2>&1 | head -1 || printf %s "$na")"
+emit libc_getconf "$na"
+emit ldd_version "$na"
 libc_path="$(find /lib /lib64 /usr/lib -maxdepth 4 -type f -name 'libc.so.6' 2>/dev/null | sort | head -1)"
 emit libc_path "${libc_path:-$na}"
 if test -n "$libc_path"; then
@@ -345,8 +360,13 @@ probe_executable=
 for candidate in /bin/sh /usr/bin/env /bin/ls; do
   if test -e "$candidate"; then probe_executable=$candidate; break; fi
 done
+emit loader_probe_executable "${probe_executable:-$na}"
 if test -n "$probe_executable" && command -v readelf >/dev/null 2>&1; then
-  interp="$(readelf -l "$probe_executable" 2>/dev/null | sed -n 's/.*Requesting program interpreter: \([^]]*\)].*/\1/p' | head -1)"
+  probe path_readelf readelf -l "$probe_executable"
+  interp=
+  if test "$probe_exit" = 0 && test -z "$probe_stderr"; then
+    interp="$(printf '%s\n' "$probe_stdout" | sed -n 's/.*Requesting program interpreter: \([^]]*\)].*/\1/p' | head -1)"
+  fi
   if test -n "$interp" && test -e "$interp"; then
     loader=$interp
     loader_method=READELF_PT_INTERP
@@ -354,7 +374,11 @@ if test -n "$probe_executable" && command -v readelf >/dev/null 2>&1; then
   fi
 fi
 if test -z "$loader" && test -n "$probe_executable" && command -v ldd >/dev/null 2>&1; then
-  interp="$(ldd "$probe_executable" 2>/dev/null | awk '{for(i=1;i<=NF;i++){v=$i; gsub(/[()]/,"",v); if(v ~ /^\// && v ~ /(ld-linux|ld-musl|\/ld-[^/]*\.so)/){print v; exit}}}')"
+  probe path_ldd ldd "$probe_executable"
+  interp=
+  if test "$probe_exit" = 0 && test -z "$probe_stderr"; then
+    interp="$(printf '%s\n' "$probe_stdout" | awk '{for(i=1;i<=NF;i++){v=$i; gsub(/[()]/,"",v); if(v ~ /^\// && v ~ /(ld-linux|ld-musl|\/ld-[^/]*\.so)/){print v; exit}}}')"
+  fi
   if test -n "$interp" && test -e "$interp"; then
     loader=$interp
     loader_method=LDD_INTERPRETER_LINE
@@ -382,9 +406,9 @@ emit dynamic_loader_path "${loader:-$na}"
 emit dynamic_loader_detection_method "$loader_method"
 emit dynamic_loader_detection_evidence "$loader_evidence"
 if test -n "$loader"; then
-  loader_identity="$("$loader" --version 2>&1 | head -1 || true)"
-  emit dynamic_loader_identity "${loader_identity:-$na}"
-else emit dynamic_loader_identity "$na"; fi
+  probe loader_realpath readlink -f -- "$loader"
+else emit loader_realpath_exit NOT_REACHED; fi
+emit dynamic_loader_identity "$na"
 emit uid "$(id -u 2>/dev/null || printf %s "$na")"
 emit gid "$(id -g 2>/dev/null || printf %s "$na")"
 emit user "$(id -un 2>/dev/null || printf %s "$na")"
@@ -466,7 +490,7 @@ def candidate_runtime_key(fingerprint: dict[str, Any]) -> dict[str, str]:
             sha256_bytes(str(fingerprint["glibc_symbol_versions"]).encode())
             if fingerprint.get("glibc_symbol_versions", NOT_AVAILABLE) != NOT_AVAILABLE else NOT_AVAILABLE
         ),
-        "dynamic_loader_identity": fingerprint.get("dynamic_loader_identity", NOT_AVAILABLE),
+        "loader_binary_sha256": fingerprint.get("dynamic_loader_sha256", NOT_AVAILABLE),
         "dynamic_loader_path": fingerprint.get("dynamic_loader_path", NOT_AVAILABLE),
         "kernel_security_contract": "|".join(str(fingerprint.get(key, NOT_AVAILABLE)) for key in ("seccomp", "no_new_privs", "landlock_securityfs", "dev_pts", "dev_ptmx")),
         "artifact_node_contract": "ARTIFACT_PROVIDED_NOT_YET_QUALIFIED",
@@ -476,16 +500,117 @@ def candidate_runtime_key(fingerprint: dict[str, Any]) -> dict[str, str]:
 
 def classification_for(fingerprint: dict[str, Any]) -> str:
     required = (
-        "uname_s", "uname_m", "libc_getconf", "dynamic_loader_path", "dynamic_loader_identity",
+        "uname_s", "uname_m", "libc_getconf", "dynamic_loader_path", "dynamic_loader_realpath",
         "dynamic_loader_detection_method", "dynamic_loader_detection_evidence",
     )
     capabilities = {
         "installed_agent_writable": "PASS", "tmp_writable": "PASS", "local_exec": "PASS",
         "dev_pts": "PRESENT", "dev_ptmx": "PRESENT",
     }
-    missing = any(fingerprint.get(key, NOT_AVAILABLE) == NOT_AVAILABLE for key in required)
+    digest = fingerprint.get("dynamic_loader_sha256", "")
+    valid_binary = (isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
+                    and fingerprint.get("loader_binary_identity_status") == "LOADER_BINARY_IDENTITY_VALID"
+                    and fingerprint.get("dynamic_loader_identity_method") == "HOST_SHA256_DOCKER_CP_RESOLVED_ELF")
+    missing = not valid_binary or any(fingerprint.get(key, NOT_AVAILABLE) == NOT_AVAILABLE for key in required)
     incompatible = any(fingerprint.get(key, NOT_AVAILABLE) != value for key, value in capabilities.items())
     return "COMPATIBILITY_NOT_YET_PROVEN" if missing or incompatible else "TASK_RUNTIME_FINGERPRINT_QUALIFIED"
+
+
+def validate_probe(method: str, command: list[str], exit_code: int | str, stdout: str, stderr: str) -> dict[str, Any]:
+    """Only method-specific, successful stdout can supply semantic evidence."""
+    value = stdout.strip()
+    valid = exit_code == 0 and not stderr.strip() and not contains_unresolved_shell_token(value)
+    if method == "GETCONF_GNU_LIBC_VERSION":
+        valid = valid and command == ["getconf", "GNU_LIBC_VERSION"] and bool(re.fullmatch(r"glibc [0-9]+\.[0-9]+", value))
+    elif method == "LDD_VERSION":
+        valid = valid and command == ["ldd", "--version"] and bool(re.fullmatch(r"ldd \([^\n]+\) [0-9]+\.[0-9]+", value.splitlines()[0] if value else ""))
+        valid = valid and not re.search(r"error|usage:|cannot open|not found", value, re.I)
+    elif method == "READLINK_REALPATH":
+        valid = valid and len(command) == 4 and command[:3] == ["readlink", "-f", "--"]
+        valid = valid and value.startswith("/") and "\n" not in value and ".." not in Path(value).parts
+    elif method in ("READELF_PT_INTERP", "LDD_INTERPRETER_LINE"):
+        # Selection additionally requires the chosen path to exist in the container.
+        valid = valid and bool(value) and not re.search(r"error|usage:|cannot open|not found", value, re.I)
+        if method == "READELF_PT_INTERP":
+            valid = valid and command[:2] == ["readelf", "-l"] and bool(re.search(r"Requesting program interpreter: /[^\]]+\]", value))
+        else:
+            valid = valid and command[:1] == ["ldd"] and bool(re.search(r"/(?:[^\s()]+/)*(?:ld-linux|ld-musl|ld-)[^\s()]+", value))
+    else:
+        valid = False
+    return {"method": method, "command": command, "exit_code": exit_code, "stdout": stdout, "stderr": stderr,
+            "semantic_validity": bool(valid), "value": value if valid else NOT_AVAILABLE,
+            "status": "VALID" if valid else "LOADER_IDENTITY_PROBE_ERROR"}
+
+
+def decode_probe(fp: dict[str, str], prefix: str, method: str, command: list[str]) -> dict[str, Any]:
+    try:
+        exit_code: int | str = int(fp[f"{prefix}_exit"])
+        stdout = base64.b64decode("" if fp[f"{prefix}_stdout_b64"] == NOT_AVAILABLE else fp[f"{prefix}_stdout_b64"], validate=True).decode()
+        stderr = base64.b64decode("" if fp[f"{prefix}_stderr_b64"] == NOT_AVAILABLE else fp[f"{prefix}_stderr_b64"], validate=True).decode()
+    except (KeyError, ValueError, UnicodeError):
+        return validate_probe(method, command, NOT_AVAILABLE, "", "probe evidence missing or invalid")
+    return validate_probe(method, command, exit_code, stdout, stderr)
+
+
+def hash_loader_binary(path: Path) -> str:
+    """Hash copied regular ELF bytes, never symlink text or a pathname."""
+    if path.is_symlink() or not path.is_file():
+        raise QualificationError("LOADER_BINARY_IDENTITY_NOT_AVAILABLE", "copied loader is not a regular file")
+    raw = path.read_bytes()
+    if (len(raw) < 64 or raw[:6] != b"\x7fELF\x02\x01" or raw[16:20] != b"\x03\x00\x3e\x00"):
+        raise QualificationError("LOADER_BINARY_IDENTITY_NOT_AVAILABLE", "expected amd64 little-endian ELF shared object")
+    return sha256_bytes(raw)
+
+
+def enrich_loader_identity(fp: dict[str, str], container_id: str, raw_dir: Path,
+                           runner: Callable = subprocess.run) -> dict[str, Any]:
+    path = fp.get("dynamic_loader_path", NOT_AVAILABLE)
+    probes = {
+        "realpath": decode_probe(fp, "loader_realpath", "READLINK_REALPATH", ["readlink", "-f", "--", path]),
+        "getconf": decode_probe(fp, "release_getconf", "GETCONF_GNU_LIBC_VERSION", ["getconf", "GNU_LIBC_VERSION"]),
+        "ldd": decode_probe(fp, "release_ldd", "LDD_VERSION", ["ldd", "--version"]),
+        "path_readelf": decode_probe(fp, "path_readelf", "READELF_PT_INTERP", ["readelf", "-l", fp.get("loader_probe_executable", NOT_AVAILABLE)]),
+        "path_ldd": decode_probe(fp, "path_ldd", "LDD_INTERPRETER_LINE", ["ldd", fp.get("loader_probe_executable", NOT_AVAILABLE)]),
+    }
+    result: dict[str, Any] = {**fp, "loader_binary_identity_status": "LOADER_BINARY_IDENTITY_NOT_AVAILABLE",
+        "dynamic_loader_realpath": NOT_AVAILABLE, "dynamic_loader_sha256": NOT_AVAILABLE,
+        "dynamic_loader_identity": NOT_AVAILABLE, "dynamic_loader_identity_method": NOT_AVAILABLE,
+        "libc_version": probes["getconf"]["value"], "libc_getconf": probes["getconf"]["value"],
+        "ldd_version": probes["ldd"]["value"], "dynamic_loader_release_metadata": NOT_AVAILABLE,
+        "loader_release_metadata_status": "LOADER_RELEASE_METADATA_NOT_AVAILABLE"}
+    if probes["ldd"]["semantic_validity"]:
+        result["dynamic_loader_release_metadata"] = {"method": "LDD_VERSION", "value": probes["ldd"]["value"],
+            "scope": "libc distribution release; not loader binary identity"}
+        result["loader_release_metadata_status"] = "VALID"
+    try:
+        realpath = probes["realpath"]["value"]
+        if path == NOT_AVAILABLE or not probes["realpath"]["semantic_validity"]:
+            return result
+        result["dynamic_loader_realpath"] = realpath
+        target = raw_dir / "loader.binary"
+        command = ["docker", "cp", "-L", f"{container_id}:{realpath}", str(target)]
+        copied = runner(command, text=True, capture_output=True, check=False)
+        probes["copy"] = {"method": "DOCKER_CP_FOLLOW_RESOLVED_TARGET", "command": command,
+            "exit_code": copied.returncode, "stdout": copied.stdout, "stderr": copied.stderr, "semantic_validity": False}
+        if copied.returncode:
+            result["loader_binary_identity_status"] = "LOADER_IDENTITY_PROBE_ERROR"
+            return result
+        try:
+            digest = hash_loader_binary(target)
+        except QualificationError as exc:
+            probes["copy"]["validation_error"] = exc.classification
+            return result
+        probes["copy"]["semantic_validity"] = True
+        result.update(dynamic_loader_sha256=digest, dynamic_loader_identity=f"sha256:{digest}",
+            dynamic_loader_identity_method="HOST_SHA256_DOCKER_CP_RESOLVED_ELF",
+            loader_binary_identity_status="LOADER_BINARY_IDENTITY_VALID")
+        return result
+    finally:
+        identity_fields = ("dynamic_loader_path", "dynamic_loader_realpath", "dynamic_loader_sha256",
+            "dynamic_loader_identity", "dynamic_loader_identity_method", "loader_binary_identity_status",
+            "libc_version", "dynamic_loader_release_metadata", "loader_release_metadata_status")
+        write_json(raw_dir / "loader-identity-probes.json", {"schema_version": "loader_identity_evidence_v1",
+            "probes": probes, "identity": {key: result[key] for key in identity_fields}})
 
 
 def content_manifest(root: Path, output: Path) -> None:
@@ -517,6 +642,7 @@ def fingerprint_one(reference: str, digest: str, raw_dir: Path) -> dict[str, Any
     before = shutil.disk_usage("/").free
     if before < MIN_DISK_FREE_BYTES:
         raise QualificationError("RUNTIME_FINGERPRINT_DISK_SAFETY_STOP", f"free={before}")
+    container_id = None
     try:
         pull = subprocess.run(["docker", "pull", "--platform", f"{PLATFORM_OS}/{PLATFORM_ARCH}", immutable], text=True, capture_output=True)
         (raw_dir / "pull.stdout").write_text(pull.stdout)
@@ -525,19 +651,34 @@ def fingerprint_one(reference: str, digest: str, raw_dir: Path) -> dict[str, Any
         if pull.returncode:
             raise QualificationError("TASK_IMAGE_PULL_FAILURE", f"{immutable}: exit {pull.returncode}")
         inspect = image_inspect(immutable)
-        proc = subprocess.run(["docker", "run", "--rm", "--entrypoint", "/bin/sh", immutable, "-c", FINGERPRINT_SCRIPT], text=True, capture_output=True, check=False)
+        created = run_checked(["docker", "create", "--entrypoint", "/bin/sh", immutable, "-c", FINGERPRINT_SCRIPT])
+        container_id = created.stdout.strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", container_id):
+            raise QualificationError("TASK_RUNTIME_FINGERPRINT_CONTAINER_FAILURE", "invalid container ID")
+        proc = subprocess.run(["docker", "start", "-a", container_id], text=True, capture_output=True, check=False)
         (raw_dir / "fingerprint.stdout").write_text(proc.stdout)
         (raw_dir / "fingerprint.stderr").write_text(proc.stderr)
-        (raw_dir / "fingerprint.exit").write_text(f"{proc.returncode}\n")
-        if proc.returncode:
+        state = json.loads(run_checked(["docker", "inspect", container_id]).stdout)[0]
+        write_json(raw_dir / "fingerprint-container-state.json", {"container_id": container_id,
+            "image": state["Image"], "state": state["State"], "start_exit": proc.returncode})
+        child_exit = state["State"]["ExitCode"]
+        (raw_dir / "fingerprint.exit").write_text(f"{child_exit}\n")
+        if proc.returncode or state["State"]["Running"] or child_exit:
             raise QualificationError("TASK_RUNTIME_FINGERPRINT_CONTAINER_FAILURE", f"{immutable}: exit {proc.returncode}")
+        if state["Image"] != inspect["docker_image_id"]:
+            raise QualificationError("TASK_IMAGE_DIGEST_MISMATCH", "fingerprint container image mismatch")
         fp = parse_fingerprint(proc.stdout)
+        fp = enrich_loader_identity(fp, container_id, raw_dir)
         if inspect["docker_os"] != PLATFORM_OS:
             raise QualificationError("TASK_IMAGE_OS_MISMATCH", immutable)
         if inspect["docker_architecture"] != PLATFORM_ARCH:
             raise QualificationError("TASK_IMAGE_ARCHITECTURE_MISMATCH", immutable)
         return {**inspect, "runtime": fp, "runtime_key_candidate": candidate_runtime_key(fp), "classification": classification_for(fp), "disk_free_before": before}
     finally:
+        if container_id:
+            cleanup = subprocess.run(["docker", "rm", "-f", container_id], text=True, capture_output=True)
+            write_json(raw_dir / "container-cleanup.json", {"container_id": container_id, "exit": cleanup.returncode,
+                "stdout": cleanup.stdout, "stderr": cleanup.stderr})
         removed = subprocess.run(["docker", "image", "rm", "-f", immutable], text=True, capture_output=True)
         write_json(raw_dir / "cleanup.json", {
             "attempted": True,
