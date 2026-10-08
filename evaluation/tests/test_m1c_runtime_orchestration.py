@@ -10,6 +10,7 @@ from scripts import m1c_runtime_identity as i
 from scripts import m1c_runtime_orchestrator as o
 from scripts import m1c_runtime_resources as r
 from scripts import m1c_runtime_qualification as q
+from scripts import m1c_runtime_builder_environment as e
 from evaluation.tests import test_m1c_runtime_identity as fixtures
 
 
@@ -220,6 +221,170 @@ class OrchestrationTests(unittest.TestCase):
                      'configs/m1c_runtime_backend_v1.json','.github/workflows/gha-m1c1-runtime-artifact.yml',
                      'evaluation/tests/test_m1c_runtime_orchestration.py'):
             self.assertEqual(manifest.count(path),1)
+
+
+class BuilderEnvironmentTests(unittest.TestCase):
+    """Synthetic pinned-config fixtures, never public metadata GET or Docker."""
+    def setUp(self):
+        self.value = 'A' * 40  # Deliberately not the real upstream identifier.
+        self.config = {'os': 'linux', 'architecture': 'amd64',
+                       'config': {'Env': ['PATH=/usr/bin', 'LANG=C.UTF-8', 'GPG_KEY=' + self.value]},
+                       'history': [{'created_by': 'fixture'} for _ in range(11)]}
+        self.raw = a.canonical(self.config)
+        self.patchers = [patch.object(e, 'CONFIG', a.digest(self.raw)),
+                         patch.object(e, 'VALUE', a.digest(self.value.encode())),
+                         patch.object(e, 'HISTORY', {7: a.digest(b'fixture'), 10: a.digest(b'fixture')})]
+        for p in self.patchers: p.start(); self.addCleanup(p.stop)
+        self.p = i.policy(); self.p['base_config_digest'] = 'sha256:' + e.CONFIG
+        self.id = 'sha256:' + 'a' * 64
+        self.image = {'Id': self.id, 'Os': 'linux', 'Architecture': 'amd64', 'Config': {
+            'Env': ['PATH=/opt/pinned-node/bin:/usr/bin', 'LANG=C.UTF-8', 'GPG_KEY=' + self.value],
+            'Labels': {'m1c.base': e.BASE, 'm1c.context': self.p['context_sha256']}, 'Entrypoint': None}}
+        self.container = {'Image': self.id, 'Config': copy.deepcopy(self.image['Config'])}
+        self.container['Config']['Cmd'] = ['/bin/sleep', 'infinity']
+        self.argv = ['docker', 'create', '--platform=linux/amd64', '--memory', '8589934592',
+                     '--memory-swap', '8589934592', '--cpus', '2', '--mount', 'fixture1',
+                     '--mount', 'fixture2', '--mount', 'fixture3', self.id, '/bin/sleep', 'infinity']
+
+    def metadata(self):
+        return e.builder_metadata(self.image, self.id, self.p, self.raw)
+
+    def test_authenticated_metadata_receipt_contains_no_value(self):
+        receipt = self.metadata()
+        self.assertEqual(receipt['classification'], 'UPSTREAM_NONSECRET_IMAGE_METADATA')
+        self.assertNotIn(self.value, json.dumps(receipt))
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp)/'receipt.json').write_bytes(a.canonical(receipt))
+            self.assertFalse(a.scan_tree(Path(tmp), artifact_mode=True))
+
+    def test_unknown_modified_private_identifier_rejected(self):
+        for value in ('unknown', 'B'*40, '-----BEGIN PRIVATE KEY-----'):
+            with self.subTest(value_type=len(value)):
+                self.image['Config']['Env'][-1] = 'GPG_KEY=' + value
+                with self.assertRaises(a.ArtifactError): self.metadata()
+
+    def test_wrong_identity_and_missing_provenance_rejected(self):
+        for field, value in [('base_image', 'wrong'), ('base_config_digest', 'sha256:'+'0'*64)]:
+            original = self.p[field]; self.p[field] = value
+            with self.assertRaises(a.ArtifactError): self.metadata()
+            self.p[field] = original
+        self.raw = b'{}'
+        with self.assertRaises(a.ArtifactError): self.metadata()
+
+    def test_platform_label_and_image_id_drift_blocked(self):
+        for field, value in [('Id', 'sha256:'+'b'*64), ('Architecture', 'arm64')]:
+            original = self.image[field]; self.image[field] = value
+            with self.assertRaises(a.ArtifactError): self.metadata()
+            self.image[field] = original
+        self.image['Config']['Labels']['m1c.base'] = 'wrong'
+        with self.assertRaises(a.ArtifactError): self.metadata()
+
+    def test_other_credential_names_unchanged(self):
+        for name in ('OTHER_KEY', 'GPG_OTHER', 'TOKEN', 'AUTHORIZATION', 'PROXY', 'NODE_OPTIONS'):
+            self.image['Config']['Env'].append(name+'=fixture')
+            with self.assertRaises(a.ArtifactError): self.metadata()
+            self.image['Config']['Env'].pop()
+        for name in ('GPG_KEY', 'OTHER_KEY', 'TOKEN', 'AUTH', 'PASSWORD', 'COOKIE', 'PROXY'):
+            with self.assertRaises(a.ArtifactError): o.RealBackend._check_environment([name+'=fixture'])
+
+    def test_correct_value_wrong_runtime_context_still_blocked(self):
+        self.metadata()
+        with self.assertRaises(a.ArtifactError): e.strict(['GPG_KEY='+self.value])
+        with self.assertRaises(a.ArtifactError): e.process_environment(['GPG_KEY='+self.value])
+        with self.assertRaises(a.ArtifactError): e.container_environment(self.container, self.image, self.id,
+            self.argv[:-3]+['--env', 'GPG_KEY='+self.value]+self.argv[-3:])
+
+    def test_container_overrides_or_duplicate_names_blocked(self):
+        self.metadata()
+        e.container_environment(self.container, self.image, self.id, self.argv)
+        self.container['Config']['Env'].append('GPG_KEY='+self.value)
+        with self.assertRaises(a.ArtifactError): e.container_environment(self.container, self.image, self.id, self.argv)
+        self.container['Config']['Env'][-1] = 'UNEXPECTED=fixture'
+        with self.assertRaises(a.ArtifactError): e.container_environment(self.container, self.image, self.id, self.argv)
+
+    def test_effective_environment_excludes_metadata(self):
+        rows = [k+'='+v for k,v in e.PROCESS_ENV.items()]
+        e.process_environment(rows)
+        for extra in ('GPG_KEY='+self.value, 'UNEXPECTED=fixture', 'NODE_OPTIONS=fixture'):
+            with self.assertRaises(a.ArtifactError): e.process_environment(rows+[extra])
+        backend = o.RealBackend.__new__(o.RealBackend); backend.builder = 'fixture'
+        backend.call = unittest.mock.Mock(return_value='')
+        backend.builder_exec(['pnpm','run','build'])
+        argv = backend.call.call_args.args[0]
+        self.assertIn('-i', argv); self.assertFalse(any('GPG_KEY' in x for x in argv))
+
+    def test_environment_failure_blocks_dsh_gate(self):
+        backend = o.RealBackend.__new__(o.RealBackend)
+        backend.builder_environment_gate = unittest.mock.Mock(side_effect=a.ArtifactError('BUILDER_RUNTIME_INJECTION'))
+        with patch.object(i, 'dsh_build_gate') as gate, self.assertRaises(a.ArtifactError):
+            backend.build_gate({}, {})
+        gate.assert_not_called()
+
+    def test_public_fetch_is_not_reached_by_local_fixtures(self):
+        with patch.object(e.urllib.request, 'build_opener', side_effect=AssertionError('network forbidden')):
+            self.metadata()
+
+    def test_fetch_errors_are_symbolic_without_value(self):
+        opener = unittest.mock.Mock(); opener.open.side_effect = RuntimeError('synthetic-private-value')
+        with patch.object(e.urllib.request, 'build_opener', return_value=opener):
+            with self.assertRaisesRegex(a.ArtifactError, '^UPSTREAM_PUBLIC_METADATA_UNAVAILABLE$'):
+                e.public_config()
+
+    def test_no_scanner_or_artifact_class_changes(self):
+        # Hash anchors, not another shallow-checkout Git-history dependency.
+        expected = {'scripts/public_secret_scan.py': 'eb5e02ac30dfc6aa29bcd34be4628b7947caa107869cb88dee03366cc22bc974',
+            'scripts/m1c_runtime_artifact.py': 'f3b75663ac20829ee7ebde25b0c08b2e1c655ec8ec22adc325633e23bfb465db',
+            'scripts/m1c_runtime_builder.py': '86d271343877db6b176b88fa057591a103f1d0afc5ba0f1efcfa2c94b2ff4178',
+            'scripts/m1c_runtime_qualification.py': '4554868346668f0a0f4ede5061a0199510deb4b7d58f0de456617de2349f65d3',
+            'evaluation/agents/dsh_harbor_adapter/adapter.py': a.ADAPTER_SHA}
+        for path, expected_hash in expected.items():
+            self.assertEqual(a.file_hash(i.ROOT/path), expected_hash)
+
+    def test_signing_purpose_required_even_when_config_hash_matches(self):
+        self.config['history'][10]['created_by'] = 'different-purpose'
+        self.raw = a.canonical(self.config)
+        with patch.object(e, 'CONFIG', a.digest(self.raw)):
+            self.p['base_config_digest'] = 'sha256:' + e.CONFIG
+            with self.assertRaisesRegex(a.ArtifactError, 'SIGNING_PURPOSE'): self.metadata()
+
+    def test_platform_required_even_when_config_hash_matches(self):
+        self.config['architecture'] = 'arm64'; self.raw = a.canonical(self.config)
+        with patch.object(e, 'CONFIG', a.digest(self.raw)):
+            self.p['base_config_digest'] = 'sha256:' + e.CONFIG
+            with self.assertRaisesRegex(a.ArtifactError, 'PLATFORM'): self.metadata()
+
+    def test_no_format_only_or_private_material_exception(self):
+        for value in ('B'*40, '-----BEGIN PRIVATE KEY-----'):
+            self.config['config']['Env'][-1] = 'GPG_KEY=' + value; self.raw = a.canonical(self.config)
+            with patch.object(e, 'CONFIG', a.digest(self.raw)):
+                self.p['base_config_digest'] = 'sha256:' + e.CONFIG
+                with self.assertRaises(a.ArtifactError): self.metadata()
+
+    def test_duplicate_upstream_metadata_rejected(self):
+        self.config['config']['Env'].append('GPG_KEY='+self.value); self.raw = a.canonical(self.config)
+        with patch.object(e, 'CONFIG', a.digest(self.raw)):
+            self.p['base_config_digest'] = 'sha256:' + e.CONFIG
+            with self.assertRaisesRegex(a.ArtifactError, 'DUPLICATE'): self.metadata()
+
+    def test_build_gate_rechecks_actual_container_not_just_receipt(self):
+        backend = o.RealBackend.__new__(o.RealBackend)
+        backend.image_id = self.id; backend.p = self.p; backend.builder = 'fixture'
+        backend.upstream_config = self.raw; backend.builder_metadata_receipt = self.metadata()
+        backend.builder_create_argv = self.argv; backend.child_env = {'PATH': '/usr/bin'}
+        backend.inspect = lambda target, image=False: self.image if image else self.container
+        backend.builder_environment_gate()
+        self.container['Config']['Env'][-1] = 'GPG_KEY='+'B'*40
+        with patch.object(i, 'dsh_build_gate') as gate, self.assertRaises(a.ArtifactError):
+            backend.build_gate({}, {})
+        gate.assert_not_called()
+
+    def test_untrusted_host_child_environment_cannot_inherit_metadata_trust(self):
+        backend = o.RealBackend.__new__(o.RealBackend)
+        backend.image_id = self.id; backend.p = self.p; backend.builder = 'fixture'
+        backend.upstream_config = self.raw; backend.builder_metadata_receipt = self.metadata()
+        backend.builder_create_argv = self.argv; backend.child_env = {'GPG_KEY': self.value}
+        backend.inspect = lambda target, image=False: self.image if image else self.container
+        with self.assertRaisesRegex(a.ArtifactError, 'CREDENTIAL'): backend.builder_environment_gate()
 
 
 if __name__ == '__main__': unittest.main()

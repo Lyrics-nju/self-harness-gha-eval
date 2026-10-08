@@ -132,6 +132,7 @@ reports/m1c_runtime_identity_binding_preparation.md
 .github/workflows/gha-m1c1-runtime-artifact.yml
 configs/m1c_runtime_backend_v1.json
 scripts/m1c_runtime_orchestrator.py
+scripts/m1c_runtime_builder_environment.py
 scripts/m1c_runtime_resources.py
 evaluation/tests/test_m1c_runtime_orchestration.py
 reports/m1c_runtime_orchestration_preparation.md

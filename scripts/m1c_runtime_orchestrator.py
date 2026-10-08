@@ -24,6 +24,7 @@ from scripts import m1c_runtime_builder as b
 from scripts import m1c_runtime_identity as i
 from scripts import m1c_runtime_qualification as q
 from scripts import m1c_runtime_resources as r
+from scripts import m1c_runtime_builder_environment as e
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = "M1C.1 Artifact V1 No-Model Qualification"
@@ -226,15 +227,19 @@ class RealBackend:
         a.require(bool(a.DIGEST.fullmatch(self.image_id)), "FINAL_IMAGE_ID_MISSING")
         image = self.inspect(self.image_id, image=True)
         a.require(image["Id"] == self.image_id and image["Os"] == "linux" and image["Architecture"] == "amd64", "BUILDER_IMAGE_DRIFT")
-        self._check_environment(image["Config"].get("Env", []))
+        self.upstream_config = e.public_config()
+        self.builder_metadata_receipt = e.builder_metadata(image, self.image_id, self.p, self.upstream_config)
+        self.record("builder-upstream-metadata", self.builder_metadata_receipt)
         rsrc = self.p["requested_resources"]
-        self.builder = self.call(["docker", "create", "--platform=linux/amd64", "--memory", str(rsrc["memory_bytes"]),
+        self.builder_create_argv = ["docker", "create", "--platform=linux/amd64", "--memory", str(rsrc["memory_bytes"]),
             "--memory-swap", str(rsrc["memory_bytes"]), "--cpus", str(rsrc["cpus"]),
             "--mount", f"type=bind,source={self.source},target=/source",
             "--mount", f"type=bind,source={self.work / 'output'},target=/output",
             "--mount", f"type=bind,source={self.work / 'evidence'},target=/evidence,readonly",
-            self.image_id, "/bin/sleep", "infinity"])
+            self.image_id, "/bin/sleep", "infinity"]
+        self.builder = self.call(self.builder_create_argv)
         a.require(bool(re.fullmatch(r"[0-9a-f]{64}", self.builder)), "BUILDER_CONTAINER_ID_MISSING")
+        self.builder_environment_gate()
         self.call(["docker", "start", self.builder])
 
     @staticmethod
@@ -244,6 +249,10 @@ class RealBackend:
                           n in {"NODE_OPTIONS", "NODE_PATH", "LD_LIBRARY_PATH"} for n in names), "CREDENTIAL_OR_ENVIRONMENT_DRIFT")
 
     def builder_identity(self) -> dict:
+        self.builder_environment_gate()
+        e.process_environment(self.builder_exec(["/usr/bin/env"]).splitlines())
+        self.record("builder-effective-environment", {"names": sorted(e.PROCESS_ENV), "GPG_KEY_present": False,
+                    "status": "EFFECTIVE_BUILDER_PROCESS_ENVIRONMENT_VERIFIED"})
         image = self.inspect(self.image_id, image=True); container = self.inspect(self.builder)
         n = json.loads(self.builder_exec(["node", "-p", "JSON.stringify({version:process.version,abi:process.versions.modules,napi:process.versions.napi})"]))
         labels = image["Config"]["Labels"]
@@ -256,6 +265,15 @@ class RealBackend:
                   "input_context_sha256": labels["m1c.context"]}
         self.record("builder-identity", record)
         return record
+
+    def builder_environment_gate(self) -> None:
+        image = self.inspect(self.image_id, image=True)
+        receipt = e.builder_metadata(image, self.image_id, self.p, self.upstream_config)
+        a.require(receipt == self.builder_metadata_receipt, "BUILDER_METADATA_RECEIPT_DRIFT")
+        e.container_environment(self.inspect(self.builder), image, self.image_id, self.builder_create_argv)
+        # call() supplies an explicit host child env: runner metadata cannot be
+        # passed through Docker build arguments or container create overrides.
+        e.strict([k + '=' + v for k, v in self.child_env.items()])
 
     def builder_capacity(self, image: dict) -> dict:
         host = self.inspect(self.builder)["HostConfig"]
@@ -275,6 +293,7 @@ class RealBackend:
                 "memory_events": {k: int(v) for k,v in events.items()}, "measurement_id": a.digest(a.canonical(raw))}
 
     def build_gate(self, image: dict, resources: dict) -> None:
+        self.builder_environment_gate()
         i.dsh_build_gate(self.p, image, resources, self.source / "pnpm-lock.yaml", self.root)
         self.evidence = {"image": image, "resources": resources}
         (self.work / "evidence/builder.json").write_bytes(a.canonical(self.evidence))
