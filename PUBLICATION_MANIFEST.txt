@@ -115,3 +115,5 @@ reports/m1c_loader_identity_evidence_validation_audit.md
 scripts/gha_m1c1_four_image_loader_probe.py
 evaluation/tests/test_m1c_four_image_loader_probe.py
 reports/m1c_four_image_loader_probe_preparation.md
+scripts/gha_m1c1_four_image_preflight.py
+evaluation/tests/test_m1c_four_image_preflight.py

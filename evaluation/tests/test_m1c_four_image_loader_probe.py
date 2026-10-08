@@ -181,7 +181,9 @@ class FourImageTests(unittest.TestCase):
             with self.assertRaises(p.rf.QualificationError): p.manifest_verify(root)
 
     def test_24_original_census_frozen(self):
-        prior = subprocess.check_output(["git", "show", "0b1eb7dc406d27dc910176d6b9a927deddb9c581:scripts/gha_m1c1_runtime_fingerprint.py"], cwd=ROOT)
+        # Baseline advanced to the verified identical source at the corrective
+        # commit's direct parent, so the GHA depth-2 contract is sufficient.
+        prior = subprocess.check_output(["git", "show", "1402698ce46653f24381baebca9588bae2b1ab1e:scripts/gha_m1c1_runtime_fingerprint.py"], cwd=ROOT)
         self.assertEqual(prior, (ROOT / "scripts/gha_m1c1_runtime_fingerprint.py").read_bytes())
 
     def test_25_original_loader_order(self):

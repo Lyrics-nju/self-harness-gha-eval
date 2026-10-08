@@ -16,12 +16,14 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Local no-model gates
+        with:
+          fetch-depth: 2
+      - name: Exact history and local no-model gates
+        id: preflight
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m unittest evaluation.tests.test_m1c_four_image_loader_probe evaluation.tests.test_m1c_loader_identity evaluation.tests.test_m1c_runtime_fingerprint -v
-          python3 scripts/public_secret_scan.py .
+          python3 scripts/gha_m1c1_four_image_preflight.py --expected-head "$GITHUB_SHA" --reports reports/four-image-preflight
       - name: Fixed four immutable images only
         shell: bash
         run: |
@@ -42,4 +44,20 @@ jobs:
         with:
           name: m1c1-four-image-loader-${{ github.run_id }}-${{ github.run_attempt }}
           path: reports/four-image-loader/
+          if-no-files-found: error
+      - name: Independent safe preflight evidence gate
+        id: preflight-evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f reports/four-image-preflight/preflight-summary.json
+          python3 scripts/public_secret_scan.py --artifact-mode reports/four-image-preflight
+          (cd reports/four-image-preflight && sha256sum preflight-summary.json > SHA256SUMS && sha256sum -c SHA256SUMS)
+      - name: Upload safe preflight summary only
+        if: always() && steps.preflight-evidence.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: m1c1-four-image-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/four-image-preflight/
           if-no-files-found: error
