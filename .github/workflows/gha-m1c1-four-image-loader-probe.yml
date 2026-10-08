@@ -1,0 +1,45 @@
+name: M1C.1 Four-Image Loader Identity Diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m1c1-four-image-loader-probe
+  cancel-in-progress: false
+
+jobs:
+  loader-identity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Local no-model gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest evaluation.tests.test_m1c_four_image_loader_probe evaluation.tests.test_m1c_loader_identity evaluation.tests.test_m1c_runtime_fingerprint -v
+          python3 scripts/public_secret_scan.py .
+      - name: Fixed four immutable images only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/gha_m1c1_four_image_loader_probe.py --reports reports/four-image-loader
+      - name: Independent artifact safety and complete manifest
+        id: evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f reports/four-image-loader/four-image-loader-summary.json
+          python3 scripts/public_secret_scan.py --artifact-mode reports/four-image-loader
+          (cd reports/four-image-loader && sha256sum -c SHA256SUMS)
+      - name: Upload safe diagnostic evidence
+        if: always() && steps.evidence.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: m1c1-four-image-loader-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/four-image-loader/
+          if-no-files-found: error

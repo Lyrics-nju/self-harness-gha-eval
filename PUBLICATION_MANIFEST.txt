@@ -111,3 +111,7 @@ splits/stable_task_pool_v3.json.gz.b64
 evidence/m1c/runtime_fingerprint/historical_task_image_map_run_34972344189_v1.json
 evaluation/tests/test_m1c_loader_identity.py
 reports/m1c_loader_identity_evidence_validation_audit.md
+.github/workflows/gha-m1c1-four-image-loader-probe.yml
+scripts/gha_m1c1_four_image_loader_probe.py
+evaluation/tests/test_m1c_four_image_loader_probe.py
+reports/m1c_four_image_loader_probe_preparation.md
