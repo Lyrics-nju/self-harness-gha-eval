@@ -1,7 +1,7 @@
 """Fixed builder policy and conservative closure packer; no Docker invocation.
 
-Exact external identities remain unresolved. Freezing them is a separate step;
-the local fixture suite does not grant permission to run a build.
+Prebuild metadata is pinned; the final builder image has not been created.
+The local fixture suite does not grant permission to run a build.
 """
 from __future__ import annotations
 
@@ -15,11 +15,9 @@ import tempfile
 from pathlib import Path
 
 from scripts import m1c_runtime_artifact as a
+from scripts import m1c_runtime_identity as identity
 
-POLICY = {"base_image": "UNRESOLVED", "node_version": "UNRESOLVED",
-          "node_archive_sha256": "UNRESOLVED", "corepack_version": "UNRESOLVED",
-          "platform": "linux/amd64", "pnpm": "11.7.0", "source_commit": a.DSH_COMMIT,
-          "minimum_glibc_target": "2.31", "builder_memory": "UNRESOLVED"}
+POLICY = identity.policy()
 
 
 def execution_gate(policy: dict, node_archive: Path, actual_commit: str) -> None:
@@ -37,12 +35,19 @@ def execution_gate(policy: dict, node_archive: Path, actual_commit: str) -> None
 
 
 def builder_plan(node_archive: Path, actual_commit: str) -> list[str]:
+    identity.validate_inputs(POLICY)
+    a.require(node_archive.is_file(), "NODE_ARCHIVE_NOT_DOWNLOADED")
     execution_gate(POLICY, node_archive, actual_commit)
+    identity.verify_archives(node_archive.parent, POLICY)
+    context = node_archive.parent.parent
+    identity.verify_staged_context(context, POLICY)
     return ["docker", "build", "--platform=linux/amd64", "--memory=" + str(POLICY["builder_memory"]),
             "--build-arg", "BASE_IMAGE=" + POLICY["base_image"], "--build-arg",
             "NODE_ARCHIVE_SHA256=" + POLICY["node_archive_sha256"], "--build-arg",
             "NODE_VERSION=" + POLICY["node_version"], "--build-arg",
-            "COREPACK_VERSION=" + POLICY["corepack_version"], "."]
+            "COREPACK_INTEGRITY=" + POLICY["corepack_integrity"], "--build-arg",
+            "PNPM_INTEGRITY=" + POLICY["pnpm_integrity"], "--file",
+            str(context / "gha/runtime-artifact-v1/Dockerfile"), str(context)]
 
 
 def command(argv: list[str], cwd: Path) -> str:
@@ -97,8 +102,13 @@ def stage_workspace(source: Path, node_root: Path, destination: Path) -> None:
 
 
 def main() -> int:
-    a.require(len(sys.argv) == 4, "BUILDER_ARGUMENTS")
-    source, node_root, output = map(Path, sys.argv[1:])
+    a.require(len(sys.argv) == 6, "BUILDER_ARGUMENTS")
+    source, node_root, output, identity_path, build_path = map(Path, sys.argv[1:])
+    evidence = json.loads(identity_path.read_bytes())
+    identity.dsh_build_gate(POLICY, evidence["image"], evidence["resources"], source / "pnpm-lock.yaml")
+    build_record = json.loads(build_path.read_bytes())
+    a.require(build_record == {"image_id": evidence["image"]["image_id"], "command": "pnpm run build",
+                              "exit": 0, "lockfile_sha256": POLICY["lockfile_sha256"]}, "BUILD_NOT_PROVEN")
     # Re-check the frozen identities even inside Docker: bypassing the planning
     # helper must never turn unresolved policy into an accepted artifact.
     execution_gate(POLICY, Path("/inputs/node.tar.xz"), command(["git", "rev-parse", "HEAD"], source))
@@ -107,6 +117,8 @@ def main() -> int:
     n = json.loads(command([str(node_root / "bin/node"), "-p",
                             "JSON.stringify({version:process.version,abi:process.versions.modules,napi:process.versions.napi})"], source))
     a.require(n["version"] == POLICY["node_version"], "NODE_IDENTITY_DRIFT")
+    a.require(n["abi"] == evidence["image"]["node_abi"] and n["napi"] == evidence["image"]["node_napi"],
+              "BUILDER_NODE_RUNTIME_DRIFT")
     n.update(archive_sha256=POLICY["node_archive_sha256"], binary_sha256=a.file_hash(node_root / "bin/node"))
     libc = command(["getconf", "GNU_LIBC_VERSION"], source)
     a.require(bool(re.fullmatch(r"glibc [0-9]+\.[0-9]+", libc)) and
@@ -115,11 +127,13 @@ def main() -> int:
     corepack = command(["corepack", "--version"], source)
     pnpm = command(["pnpm", "--version"], source)
     a.require(corepack == POLICY["corepack_version"] and pnpm == POLICY["pnpm"], "TOOLCHAIN_DRIFT")
+    a.require(libc == evidence["image"]["libc"], "BUILDER_LIBC_RUNTIME_DRIFT")
     provenance = {"source_commit": commit, "source_tree": tree, "lockfile_sha256": a.file_hash(source / "pnpm-lock.yaml"),
-                  "builder_image": POLICY["base_image"], "platform": POLICY["platform"], "libc": libc,
+                  "builder_image": evidence["image"]["image_id"], "platform": POLICY["platform"], "libc": libc,
                   "node": n, "corepack": corepack, "pnpm": pnpm,
+                  "builder_evidence": evidence,
                   "build": {"command": "pnpm run build", "environment": "CLEAN_BUILDER_NO_TASK_STATE", "exit": 0}}
-    # This entry is called only by the Docker RUN chain after build exit 0.
+    # Independent post-build receipts are required. This packer never builds.
     # Record/reject tracked source or lockfile modifications caused by the build.
     with tempfile.TemporaryDirectory() as temporary:
         stage = Path(temporary) / "closure"
@@ -133,7 +147,12 @@ if __name__ == "__main__":
         source = Path(sys.argv[2])
         commit, _tree = source_identity(source)
         execution_gate(POLICY, Path("/inputs/node.tar.xz"), commit)
+        identity.verify_archives(Path("/inputs"), POLICY)
+        a.require(a.file_hash(source / "pnpm-lock.yaml") == POLICY["lockfile_sha256"], "FROZEN_LOCKFILE_DRIFT")
         a.require("NODE_OPTIONS" not in os.environ, "BUILD_ENVIRONMENT_DRIFT")
-        print("BUILDER_EXECUTION_IDENTITIES_FROZEN")
+        # This legacy path proves input/archive identities only, never grants
+        # build permission or fabricates a final image identity.
+        identity.validate_inputs(POLICY)
+        print("PREBUILD_INPUT_IDENTITIES_PINNED")
     else:
         raise SystemExit(main())

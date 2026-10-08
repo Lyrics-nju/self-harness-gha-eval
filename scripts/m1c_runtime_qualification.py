@@ -20,7 +20,7 @@ from scripts import gha_m1c1_runtime_fingerprint as rf
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = "terminal-bench/configure-git-webserver"
-TASK_CONFIG_SHA256 = "UNRESOLVED"
+TASK_CONFIG_SHA256 = json.loads((ROOT / "configs/m1c_runtime_task_binding_v1.json").read_bytes())["task_config_sha256"]
 RESOURCE_ENVELOPE = "UNRESOLVED"
 ENVELOPE_FIELDS = {"memory_bytes", "nano_cpus", "storage_options", "memory_swap", "cpu_quota", "cpu_period",
                    "cpuset_cpus", "cpu_shares", "memory_reservation", "pids_limit"}

@@ -1,0 +1,20 @@
+{
+  "schema": "m1c_runtime_task_binding_v1",
+  "task_id": "terminal-bench/configure-git-webserver",
+  "task_config_hash_mode": "BYTE_LEVEL_SHA256",
+  "task_config_sha256": "ebb40d72f689512cbd90d865d88ef966b6665ab215544f9247b898b7fa94751b",
+  "dataset_sha256": "7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+  "census_run": 37751486266,
+  "census_task_image_map_sha256": "121788f925ce2d4e56e6da9aacda79c5663524f797fef41fa3b29b5997c7ecbe",
+  "image_mapping": {
+    "authoritative_image_ref": "alexgshaw/configure-git-webserver:20251031",
+    "historical_platform_digest": "sha256:9e48389b917fd4650dda1f64406bd7198bbf20dc1c6b0e5c4d81a3c16369f88c",
+    "task": "terminal-bench/configure-git-webserver"
+  },
+  "task_requested_resources": {"cpus": 1, "memory_mb": 2048, "storage_mb": 10240},
+  "harbor_version": "0.21.0",
+  "contract": "Original Harbor Docker CPU/memory LIMIT mode, no resource override; storage unsupported by Docker backend. Swap/defaults require independently frozen effective baseline; task hash is not enforcement evidence.",
+  "effective_resource_envelope": "NOT_MEASURED",
+  "qualification_blocker": "ORIGINAL_EFFECTIVE_RESOURCE_BASELINE_NOT_YET_BOUND",
+  "exposure": "PROVEN_ZERO / UNEXPOSED"
+}

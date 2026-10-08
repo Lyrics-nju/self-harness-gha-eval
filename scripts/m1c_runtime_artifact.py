@@ -126,11 +126,11 @@ def inventory(tree: Path) -> list[dict]:
 
 def validate_provenance(p: dict) -> None:
     require(set(p) == {"source_commit", "source_tree", "lockfile_sha256", "builder_image",
-                      "platform", "libc", "node", "corepack", "pnpm", "build"}, "PROVENANCE_SCHEMA")
+                      "platform", "libc", "node", "corepack", "pnpm", "build", "builder_evidence"}, "PROVENANCE_SCHEMA")
     require(p["source_commit"] == DSH_COMMIT, "SOURCE_COMMIT_DRIFT")
     require(bool(re.fullmatch(r"[0-9a-f]{40}", p["source_tree"])), "SOURCE_TREE_UNRESOLVED")
     require(bool(HEX.fullmatch(p["lockfile_sha256"])), "LOCKFILE_UNRESOLVED")
-    require(bool(re.fullmatch(r"[a-z0-9./:_-]+@sha256:[0-9a-f]{64}", p["builder_image"])),
+    require(bool(re.fullmatch(r"(?:[a-z0-9./:_-]+@)?sha256:[0-9a-f]{64}", p["builder_image"])),
             "BUILDER_DIGEST_UNRESOLVED")
     require(p["platform"] == "linux/amd64", "PLATFORM_DRIFT")
     require(bool(re.fullmatch(r"glibc [0-9]+\.[0-9]+", p["libc"])), "LIBC_UNRESOLVED")
@@ -145,6 +145,15 @@ def validate_provenance(p: dict) -> None:
     require(p["pnpm"] == "11.7.0", "PNPM_DRIFT")
     require(p["build"] == {"command": "pnpm run build", "environment": "CLEAN_BUILDER_NO_TASK_STATE",
                            "exit": 0}, "BUILD_NOT_PROVEN")
+    from scripts import m1c_runtime_identity as identity
+    evidence = p["builder_evidence"]
+    require(set(evidence) == {"image", "resources"}, "BUILDER_EVIDENCE_SCHEMA")
+    identity.capacity_gate(evidence["resources"], identity.policy(), evidence["image"])
+    image = evidence["image"]
+    require(p["builder_image"] == image["image_id"] and p["libc"] == image["libc"] and
+            n["version"] == image["node_version"] and n["abi"] == image["node_abi"] and
+            n["napi"] == image["node_napi"] and p["corepack"] == image["corepack"] and
+            p["pnpm"] == image["pnpm"], "BUILDER_PROVENANCE_DRIFT")
 
 
 def pack(tree: Path, provenance: dict, output: Path) -> dict:

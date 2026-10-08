@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 from scripts import m1c_runtime_artifact as a
 from scripts import m1c_runtime_builder as b
 from scripts import m1c_runtime_qualification as q
+from scripts import m1c_runtime_identity as i
 
 
 class ArtifactTests(unittest.TestCase):
@@ -35,12 +36,22 @@ class ArtifactTests(unittest.TestCase):
         (self.tree / "node_modules/test").symlink_to("../packages/test", target_is_directory=True)
         self.provenance = {"source_commit": a.DSH_COMMIT, "source_tree": "f" * 40,
                            "lockfile_sha256": a.file_hash(self.tree / "pnpm-lock.yaml"),
-                           "builder_image": "example.invalid/generic@sha256:" + "a" * 64,
+                           "builder_image": "sha256:" + "a" * 64,
                            "platform": "linux/amd64", "libc": "glibc 2.31",
                            "node": {"version": "v24.0.0", "abi": "137", "napi": "10",
                                     "archive_sha256": "b" * 64, "binary_sha256": a.file_hash(self.tree / a.NODE)},
                            "corepack": "0.33.0", "pnpm": "11.7.0",
                            "build": {"command": "pnpm run build", "environment": "CLEAN_BUILDER_NO_TASK_STATE", "exit": 0}}
+        self.provenance["builder_evidence"] = {
+            "image": {"image_id": "sha256:" + "a" * 64, "container_image_id": "sha256:" + "a" * 64,
+                      "image_config_sha256": "a" * 64, "platform": "linux/amd64", "libc": "glibc 2.31",
+                      "os_release_sha256": "b" * 64, "node_version": "v24.0.0", "node_abi": "137", "node_napi": "10",
+                      "corepack": "0.33.0", "pnpm": "11.7.0", "input_context_sha256": i.policy()["context_sha256"],
+                      "base_image": i.policy()["base_image"]},
+            "resources": {"host_cpus": 4, "host_mem_available_bytes": 12 * 1024**3,
+                          "host_free_disk_bytes": 14 * 1024**3, "container_memory_max": 8 * 1024**3,
+                          "container_nano_cpus": 2 * 10**9, "container_memory_swap": 8 * 1024**3,
+                          "memory_events": {"oom": 0, "oom_kill": 0}, "measurement_id": "c" * 64}}
         self.bundle = self.root / "bundle"
 
     def packed(self):
@@ -93,7 +104,7 @@ class ArtifactTests(unittest.TestCase):
     def test_05_manifest_tamper(self):
         manifest, receipt = self.packed()
         manifest["provenance"]["libc"] = "glibc 2.39"
-        self.rejected(lambda: a.verify_archive(self.bundle / "program.tar", manifest, receipt), "HASH_MISMATCH")
+        self.rejected(lambda: a.verify_archive(self.bundle / "program.tar", manifest, receipt), "BUILDER_PROVENANCE_DRIFT")
 
     def test_06_missing_archive_file(self):
         manifest, receipt = self.packed()
@@ -239,7 +250,7 @@ class ArtifactTests(unittest.TestCase):
         self.rejected(lambda: a.materialize(self.bundle / "program.tar", manifest, receipt, parent / "dest"), "PARENT_SYMLINK")
 
     def test_33_actual_builder_boundary_closed(self):
-        self.rejected(lambda: b.builder_plan(self.root / "not-downloaded", a.DSH_COMMIT), "BUILDER_DIGEST_UNRESOLVED")
+        self.rejected(lambda: b.builder_plan(self.root / "not-downloaded", a.DSH_COMMIT), "NODE_ARCHIVE_NOT_DOWNLOADED")
 
     def test_34_node_archive_checksum(self):
         archive = self.root / "node.tar.xz"; archive.write_bytes(b"fixture")
@@ -315,7 +326,9 @@ class ArtifactTests(unittest.TestCase):
         # Harbor read-only setup integration are explicitly frozen.
         self.assertFalse((ROOT / ".github/workflows/gha-m1c1-runtime-artifact.yml").exists())
         recipe = (ROOT / "gha/runtime-artifact-v1/Dockerfile").read_text()
-        self.assertLess(recipe.index("--preflight /source"), recipe.index("pnpm install --frozen-lockfile"))
+        self.assertNotIn("pnpm install --frozen-lockfile", recipe)
+        self.assertNotIn("pnpm run build", recipe)
+        self.assertNotIn("COPY source/", recipe)
         self.assertNotIn("apt-get", recipe); self.assertNotIn("curl", recipe)
         self.assertNotIn("NODE_OPTIONS=", recipe)
 
@@ -465,7 +478,8 @@ class ArtifactTests(unittest.TestCase):
     def test_56_source_controlled_tooling_only(self):
         recipe = (ROOT / "gha/runtime-artifact-v1/Dockerfile").read_text()
         self.assertNotIn("COPY tooling/ /tooling/", recipe)
-        self.assertIn("tooling/scripts/public_secret_scan.py", recipe)
+        self.assertIn("COPY scripts/ /tooling/scripts/", recipe)
+        self.assertIn("scripts/public_secret_scan.py", i.CONTEXT_FILES)
 
     def test_57_transport_reads_real_identity_shape(self):
         self.packed()
